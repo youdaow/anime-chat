@@ -36,7 +36,7 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
     ("32位混合随机串", re.compile(r"\b(?=[0-9A-Za-z]{32}\b)(?=[^\s]*[a-z])(?=[^\s]*[A-Z])(?=[^\s]*\d)[0-9A-Za-z]{32}\b")),
 ]
 
-SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache"}
+SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", "dist"}
 # 明确会被 .gitignore 排除的路径：扫到只提示，不算泄漏
 WOULD_IGNORE = ("data/", "pack-export/", ".env")
 # 测试里合法的假 Key
