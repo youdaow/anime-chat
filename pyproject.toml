@@ -1,0 +1,37 @@
+[project]
+name = "animechat"
+version = "0.1.0"
+description = "二次元角色聊天 AI：模仿角色性格，会看情绪发表情包"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "pydantic>=2.9",
+    "pillow>=11.0",
+    "python-multipart>=0.0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
+# 飞书桥接才需要。网页端不装也照常跑，所以不放进 dependencies：
+# 它自己会拖 requests / pycryptodome，还会把 websockets 钉到 <16。
+feishu = ["lark-oapi>=1.7"]
+
+[project.scripts]
+animechat = "animechat.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/animechat"]
+
+# 素材和前端都在 src/animechat 里面，随包一起走，不需要 force-include
+# （force-include 会在 site-packages 造出一个没有 __init__.py 的影子目录，反过来挡住可编辑安装）
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["src"]

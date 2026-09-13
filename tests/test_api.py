@@ -1,0 +1,301 @@
+"""端到端：Mock 模式下，界面要拿到的东西都得有。"""
+
+import io
+import json
+import re
+
+import pytest
+from fastapi.testclient import TestClient
+from PIL import Image
+
+from animechat import media
+from animechat.config import user_sticker_dir
+from animechat.server import create_app
+from animechat.stickers import library
+
+
+@pytest.fixture()
+def client():
+    app = create_app()
+    with TestClient(app) as c:
+        yield c
+
+
+def sse_events(text: str) -> list[tuple[str, dict]]:
+    out = []
+    for block in text.split("\n\n"):
+        name, data = "message", ""
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                name = line[6:].strip()
+            elif line.startswith("data:"):
+                data += line[5:].strip()
+        if data:
+            out.append((name, json.loads(data)))
+    return out
+
+
+def test_bootstrap_shape(client):
+    data = client.get("/api/bootstrap").json()
+    assert data["version"]
+    assert len(data["characters"]) >= 5
+    assert data["settings"]["mock_mode"] is True
+    assert data["emotions"]
+
+
+def test_conversation_starts_with_greeting(client):
+    cid = client.get("/api/characters").json()["characters"][0]["id"]
+    created = client.post("/api/conversations", json={"character_id": cid}).json()
+    detail = client.get("/api/conversations/" + str(created["conversation"]["id"])).json()
+    assert detail["messages"][0]["role"] == "assistant"
+    assert detail["messages"][0]["content"]
+    assert "[sticker" not in detail["messages"][0]["content"]  # 开场白里的标记要变成真表情
+    assert created["conversation"]["character_id"] == cid
+
+
+def test_chat_streams_text_and_finishes(client):
+    cid = client.get("/api/characters").json()["characters"][0]["id"]
+    conv = client.post("/api/conversations", json={"character_id": cid}).json()["conversation"]["id"]
+    resp = client.post("/api/chat", json={"conversation_id": conv, "content": "你好呀"})
+    assert resp.status_code == 200
+    events = sse_events(resp.text)
+    names = [n for n, _ in events]
+    assert names[0] == "start" and names[-1] == "done"
+    text = "".join(d["t"] for n, d in events if n == "text")
+    assert text.strip()
+    assert "[" not in text and "sticker:" not in text
+    done = events[-1][1]
+    assert done["message_id"]
+    assert re.search(r"\d+", str(done["elapsed_ms"]))
+    stored = client.get("/api/conversations/" + str(conv)).json()["messages"]
+    # 落库内容是收完的正文去掉首尾空白；done 事件与库里必须一致（前端靠它对账）
+    assert stored[-1]["content"] == text.strip()
+    assert done["content"] == stored[-1]["content"]
+
+
+def test_user_sticker_and_model_marker_both_reach_client(client):
+    sticker_dir = user_sticker_dir()
+    sticker_dir.mkdir(parents=True, exist_ok=True)
+    path = sticker_dir / "加油+冲+打气.png"
+    Image.new("RGBA", (32, 32), (255, 180, 60, 255)).save(path)
+    library().refresh()
+    st = library().resolve("加油")
+    assert st is not None
+
+    created = client.post("/api/characters", json={
+        "name": "测试元气", "sticker_style": "rich", "greeting": "冲！",
+        "sticker_prefs": ["加油"], "description": "爱发图",
+    }).json()["character"]
+    conv = client.post("/api/conversations", json={"character_id": created["id"]}).json()["conversation"]["id"]
+    resp = client.post("/api/chat", json={"conversation_id": conv, "content": "我要考试了，给我打打气",
+                                          "stickers": [st.id]})
+    events = sse_events(resp.text)
+    stickers = [d for n, d in events if n == "sticker"]
+    assert stickers, "角色一句话都没甩表情，说明标记/兜底链路断了"
+    detail = client.get("/api/conversations/" + str(conv)).json()["messages"]
+    user_msg = [m for m in detail if m["role"] == "user"][0]
+    assert user_msg["stickers"] == [st.id]
+
+
+def test_regenerate_replaces_last_reply(client):
+    cid = client.get("/api/characters").json()["characters"][0]["id"]
+    conv = client.post("/api/conversations", json={"character_id": cid}).json()["conversation"]["id"]
+    client.post("/api/chat", json={"conversation_id": conv, "content": "讲句话"})
+    before = client.get("/api/conversations/" + str(conv)).json()["messages"]
+    resp = client.post("/api/chat", json={"conversation_id": conv, "regenerate": True})
+    assert resp.status_code == 200
+    after = client.get("/api/conversations/" + str(conv)).json()["messages"]
+    assert len(after) == len(before)
+    assert after[-1]["id"] != before[-1]["id"]
+
+
+def test_character_crud_and_card_import(client):
+    made = client.post("/api/characters", json={"name": "卡皮巴拉", "personality": "淡定"}).json()["character"]
+    assert made["builtin"] is False
+    updated = client.put("/api/characters/" + made["id"], json={"personality": "更淡定", "nothing": 1}).json()["character"]
+    assert updated["personality"] == "更淡定"
+    card = client.get("/api/characters/" + made["id"] + "/export.json").json()
+    assert card["spec"] == "chara_card_v2" and card["data"]["name"] == "卡皮巴拉"
+    assert client.post("/api/characters", json={"name": "  "}).status_code == 400
+
+    png = client.get("/api/characters/" + made["id"] + "/export.png")
+    if png.status_code == 200:  # 需要 Pillow + chibi 生成底图
+        assert png.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    imported = client.post("/api/characters/import",
+                           files={"file": ("card.json", json.dumps(card), "application/json")})
+    assert imported.status_code == 200
+    assert imported.json()["character"]["name"] == "卡皮巴拉"
+    assert imported.json()["character"]["personality"] == "更淡定"
+
+    assert client.delete("/api/characters/" + made["id"]).json()["how"] == "deleted"
+    assert client.get("/api/characters/" + made["id"]).status_code == 404
+
+
+def test_deleting_character_takes_its_avatar_with_it(client):
+    """导入的角色卡把头像存成 card_<id>.png；以前 delete 只清 gen_，那文件会永远
+       留在盘上。内置头像走 /media/builtin/，前缀不同，不会被顺手删掉。"""
+    from animechat.media import resolve
+
+    # resolve() 对不存在的文件返回 None，所以先把头像真的落盘
+    p = media.avatar_path("card_leak-test.png")
+    p.write_bytes(b"\x89PNG\r\n\x1a\n fake")
+    made = client.post("/api/characters", json={
+        "name": "测试头像残留", "avatar": media.AVATAR_PREFIX + p.name})
+    cid = made.json()["character"]["id"]
+    assert resolve(made.json()["character"]["avatar"]) is not None, "前置条件：头像文件得真的存在"
+
+    assert client.delete("/api/characters/" + cid).status_code == 200
+    assert not p.is_file(), "删了角色却留下头像文件，是磁盘泄漏"
+
+    builtins = [c for c in client.get("/api/characters").json()["characters"] if c["builtin"]]
+    assert builtins, "没有内置角色，测不到误删"
+    for c in builtins:
+        assert resolve(c["avatar"]) is not None, c["name"] + " 的内置头像被波及了"
+
+def test_builtin_character_is_hidden_not_deleted(client):
+    cid = "xingye-liuli"
+    out = client.delete("/api/characters/" + cid).json()
+    assert out["how"] == "hidden"
+    assert cid not in [c["id"] for c in client.get("/api/characters").json()["characters"]]
+    assert cid in [c["id"] for c in client.get("/api/characters?include_hidden=true").json()["characters"]]
+    client.post("/api/characters/" + cid + "/restore")
+    assert cid in [c["id"] for c in client.get("/api/characters").json()["characters"]]
+
+
+def test_sticker_endpoints(client):
+    listing = client.get("/api/stickers").json()["stickers"]
+    if listing:
+        sid = listing[0]["id"]
+        patched = client.patch("/api/stickers/" + sid, json={"favorite": True}).json()["sticker"]
+        assert patched["favorite"] is True
+        client.patch("/api/stickers/" + sid, json={"favorite": False})
+    buf = io.BytesIO()
+    Image.new("RGBA", (20, 20)).save(buf, format="PNG")
+    up = client.post("/api/stickers/upload",
+                     files={"file": ("啦啦+开心.png", buf.getvalue(), "image/png")},
+                     data={"tags": "啦啦,开心", "emotion": "happy"})
+    assert up.status_code == 200
+    made = up.json()["sticker"]
+    assert "开心" in client.get("/api/stickers?q=啦啦").json()["stickers"][0]["tags"]
+    assert client.delete("/api/stickers/" + made["id"]).status_code == 200
+
+
+def test_settings_roundtrip_masks_key(client):
+    out = client.patch("/api/settings", json={"llm_temperature": 0.35, "sticker_mode": "off"}).json()["settings"]
+    assert out["llm_temperature"] == 0.35
+    assert out["sticker_mode"] == "off"
+    assert "…" not in out["llm_api_key"] or len(out["llm_api_key"]) < 14  # 绝不回显明文
+    assert client.patch("/api/settings", json={"sticker_mode": "不像话的值"}).status_code == 400
+
+
+def test_media_route_blocks_traversal(client):
+    assert client.get("/media/stickers/..%2f..%2fpyproject.toml").status_code in (400, 404)
+    assert client.get("/media/nope/x.png").status_code == 404
+
+
+def test_context_endpoint_shows_system_prompt(client):
+    cid = client.get("/api/characters").json()["characters"][0]["id"]
+    conv = client.post("/api/conversations", json={"character_id": cid}).json()["conversation"]["id"]
+    client.post("/api/chat", json={"conversation_id": conv, "content": "在吗"})
+    data = client.get("/api/conversations/" + str(conv) + "/context").json()
+    assert data["messages"][0]["role"] == "system"
+    assert "[sticker:标签]" in data["messages"][0]["content"]
+    assert data["chars"] > 100
+
+# ---------------------------------------------------------------- 未读红点
+
+def _unread_of(client, conv_id):
+    rows = client.get("/api/conversations").json()["conversations"]
+    return [c for c in rows if c["id"] == conv_id][0]["unread_count"]
+
+
+def test_unread_counts_character_replies_only(client):
+    """侧栏那个红色气泡的数字来自这里：只数角色的回复，用户自己发的那条不算。"""
+    cid = client.get("/api/characters").json()["characters"][0]["id"]
+    conv = client.post("/api/conversations", json={"character_id": cid}).json()["conversation"]["id"]
+    assert _unread_of(client, conv) == 1, "开场白是角色发的，没读过就该亮 1"
+
+    client.post("/api/chat", json={"conversation_id": conv, "content": "在吗"})
+    assert _unread_of(client, conv) == 2, "用户那句不该算未读，角色回的这句才算"
+
+    chars = {c["id"]: c for c in client.get("/api/bootstrap").json()["characters"]}
+    assert chars[cid]["unread_count"] == 2, "角色列表项上的未读总数要跟着会话走"
+
+    out = client.post("/api/conversations/" + str(conv) + "/read").json()
+    assert out["cleared"] == 2 and out["conversation"]["unread_count"] == 0
+    assert _unread_of(client, conv) == 0, "读过之后必须归零，否则红点消不掉"
+
+    client.post("/api/chat", json={"conversation_id": conv, "content": "再说一句"})
+    assert _unread_of(client, conv) == 1, "新回复要重新点亮"
+
+
+def test_mark_read_watermark_never_goes_backwards(client):
+    """「删到这儿」会把最大的消息 id 删小。水位线要是跟着往回拽，已读的消息会集体
+       重新亮起红点——用户看到的就是「我明明看过了」。"""
+    cid = client.get("/api/characters").json()["characters"][0]["id"]
+    conv = client.post("/api/conversations", json={"character_id": cid}).json()["conversation"]["id"]
+    client.post("/api/chat", json={"conversation_id": conv, "content": "讲句话"})
+    client.post("/api/conversations/" + str(conv) + "/read")
+    assert _unread_of(client, conv) == 0
+
+    msgs = client.get("/api/conversations/" + str(conv)).json()["messages"]
+    client.delete("/api/messages/" + str(msgs[1]["id"]))   # 从第二条往后全删
+    assert _unread_of(client, conv) == 0, "截断之后水位线不能被往回拽"
+
+
+def test_read_endpoint_is_idempotent_and_404s(client):
+    cid = client.get("/api/characters").json()["characters"][0]["id"]
+    conv = client.post("/api/conversations", json={"character_id": cid}).json()["conversation"]["id"]
+    assert client.post("/api/conversations/" + str(conv) + "/read").json()["cleared"] == 1
+    assert client.post("/api/conversations/" + str(conv) + "/read").json()["cleared"] == 0
+    assert client.post("/api/conversations/999999/read").status_code == 404
+
+def test_upgrade_does_not_light_up_old_history(tmp_path):
+    """老库升到带未读水位的这一版时，库里的历史必须一律算读过。少这步回填
+       （默认 0 = 「一条都没读」），用户升级完看到的是满屏红点，会以为软件坏了。"""
+    import sqlite3
+
+    from animechat.store import Store
+
+    path = tmp_path / "old_unread.db"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        "CREATE TABLE conversations (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " character_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',"
+        " pinned INTEGER NOT NULL DEFAULT 0, participants TEXT NOT NULL DEFAULT '[]',"
+        " summary TEXT NOT NULL DEFAULT '', summary_upto INTEGER NOT NULL DEFAULT 0,"
+        " created_at REAL NOT NULL, updated_at REAL NOT NULL);"
+        "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " conversation_id INTEGER NOT NULL, role TEXT NOT NULL,"
+        " content TEXT NOT NULL DEFAULT '', stickers TEXT NOT NULL DEFAULT '[]', emotion TEXT,"
+        " meta TEXT NOT NULL DEFAULT '{}', speaker TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL);")
+    conn.execute("INSERT INTO conversations(character_id,created_at,updated_at) VALUES('a',1.0,1.0)")
+    for i in range(3):
+        conn.execute("INSERT INTO messages(conversation_id,role,content,created_at)"
+                     " VALUES(1,'assistant',?,1.0)", ("看过的老消息" + str(i),))
+    conn.commit()
+    conn.close()
+
+    db = Store(path)
+    assert db.get_conversation(1).unread_count == 0, "升级完不该把老回复算成未读"
+    assert db.list_conversations("a")[0].unread_count == 0
+    db.add_message(1, "assistant", "升级之后刚到的一句")
+    assert db.get_conversation(1).unread_count == 1, "升级后新到的那句该亮红点"
+    assert db.mark_read(1) == 1
+    assert db.get_conversation(1).unread_count == 0
+
+
+def test_group_unread_shows_on_every_member(client):
+    """群里有人回了话，从任何一个成员的列表项都该看得到红点：平板 / 手机的窄栏里
+       只剩角色头像条，会话那一列根本看不见字。"""
+    ids = [client.post("/api/characters", json={"name": n, "greeting": n + "的招呼"}).json()["character"]["id"]
+           for n in ("甲", "乙")]
+    client.post("/api/conversations", json={"character_id": ids[0], "participants": ids, "title": "群"})
+    chars = {c["id"]: c for c in client.get("/api/bootstrap").json()["characters"]}
+    assert chars[ids[0]]["unread_count"] == 2 and chars[ids[1]]["unread_count"] == 2
+
+    conv = client.get("/api/conversations").json()["conversations"][0]
+    client.post("/api/conversations/" + str(conv["id"]) + "/read")
+    chars = {c["id"]: c for c in client.get("/api/bootstrap").json()["characters"]}
+    assert chars[ids[0]]["unread_count"] == 0 and chars[ids[1]]["unread_count"] == 0

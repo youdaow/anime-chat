@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "note": "内置示例表情包库的唯一事实源。scripts/make_sample_stickers.py 读取本文件产出同名 PNG；animechat.stickers 读取 tags/emotion 做匹配。新增表情只需在此加一条并重跑生成脚本。",
+  "canvas": { "size": 512, "radius": 96, "transparent": true },
+  "emotions": {
+    "happy": "开心", "sad": "难过", "angry": "生气", "tsundere": "傲娇", "shock": "震惊",
+    "awkward": "无语", "love": "喜欢", "sleepy": "困倦", "think": "思考", "hype": "亢奋", "neutral": "平常"
+  },
+  "component_vocabulary": {
+    "eyes": ["dot", "happy_arc", "closed_up", "teary", "half_liddroop", "wide_shock", "angry_slant", "wink", "heart", "sleep_closed", "side_eye", "sparkle"],
+    "mouth": ["grin_open", "smile_small", "wavy_awkward", "pout", "frown", "open_talk", "teeth_grit", "o_shock", "tongue", "flat"],
+    "brows": ["normal", "raised", "angry", "sad_worry", "hidden"],
+    "extras": ["sparkle", "tear_drops", "sweat_drop", "blush_lines", "hearts", "flame", "smoke_puff", "shock_lines", "question_marks", "zzz_bubble", "music_note", "petal", "moon", "star", "cool_shades"],
+    "gesture": ["none", "cheer_arms", "hug_arms", "akimbo", "thumbs_up", "facepalm", "point", "shrug", "peace", "clap"]
+  },
+  "stickers": [
+    { "id": "dagao", "label": "大笑", "emotion": "happy", "palette": "peach", "face": { "eyes": "happy_arc", "mouth": "grin_open", "brows": "raised", "extras": ["sparkle"], "gesture": "cheer_arms" }, "tags": ["大笑", "哈哈", "开心", "好笑", "笑死"] },
+    { "id": "haoye", "label": "好耶", "emotion": "happy", "palette": "lemon", "face": { "eyes": "sparkle", "mouth": "grin_open", "brows": "raised", "extras": ["star"], "gesture": "peace" }, "tags": ["好耶", "太棒了", "开心", "耶", "喜欢"] },
+    { "id": "deyi", "label": "得意", "emotion": "happy", "palette": "mint", "face": { "eyes": "half_liddroop", "mouth": "tongue", "brows": "normal", "extras": ["cool_shades"], "gesture": "thumbs_up" }, "tags": ["得意", "厉害", "夸我", "求表扬", "不错吧"] },
+    { "id": "weiqu", "label": "委屈", "emotion": "sad", "palette": "lavender", "face": { "eyes": "teary", "mouth": "pout", "brows": "sad_worry", "extras": ["tear_drops"], "gesture": "hug_arms" }, "tags": ["委屈", "难过", "想哭", "哭", "可怜"] },
+    { "id": "wuwu", "label": "呜呜", "emotion": "sad", "palette": "blue", "face": { "eyes": "closed_up", "mouth": "open_talk", "brows": "sad_worry", "extras": ["tear_drops"], "gesture": "none" }, "tags": ["呜呜", "大哭", "泪目", "哭了", "伤心", "安慰我"] },
+    { "id": "shengqi", "label": "生气了", "emotion": "angry", "palette": "red", "face": { "eyes": "angry_slant", "mouth": "teeth_grit", "brows": "angry", "extras": ["smoke_puff"], "gesture": "akimbo" }, "tags": ["生气", "愤怒", "火大", "气死", "恼火"] },
+    { "id": "zhamao", "label": "炸毛", "emotion": "angry", "palette": "orange", "face": { "eyes": "wide_shock", "mouth": "o_shock", "brows": "angry", "extras": ["shock_lines", "flame"], "gesture": "none" }, "tags": ["炸毛", "跳脚", "抓狂", "受不了", "崩溃"] },
+    { "id": "tsun", "label": "才没有", "emotion": "tsundere", "palette": "pink", "face": { "eyes": "side_eye", "mouth": "flat", "brows": "angry", "extras": ["blush_lines"], "gesture": "akimbo" }, "tags": ["傲娇", "才没有", "哼", "别误会", "才不是", "口是心非"] },
+    { "id": "lianhe", "label": "脸红", "emotion": "tsundere", "palette": "rose", "face": { "eyes": "closed_up", "mouth": "smile_small", "brows": "raised", "extras": ["blush_lines", "petal"], "gesture": "point" }, "tags": ["脸红", "害羞", "不好意思", "羞", "被夸"] },
+    { "id": "zhenjing", "label": "震惊", "emotion": "shock", "palette": "cyan", "face": { "eyes": "wide_shock", "mouth": "o_shock", "brows": "raised", "extras": ["shock_lines"], "gesture": "facepalm" }, "tags": ["震惊", "不会吧", "什么", "惊了", "离谱", "裂开"] },
+    { "id": "daizhu", "label": "呆住", "emotion": "shock", "palette": "gray", "face": { "eyes": "dot", "mouth": "flat", "brows": "hidden", "extras": ["question_marks"], "gesture": "none" }, "tags": ["呆住", "懵了", "宕机", "愣住", "啊这"] },
+    { "id": "wuyu", "label": "无语", "emotion": "awkward", "palette": "slate", "face": { "eyes": "half_liddroop", "mouth": "flat", "brows": "normal", "extras": ["sweat_drop"], "gesture": "shrug" }, "tags": ["无语", "流汗", "汗", "尴尬", "呃", "无言", "吐槽"] },
+    { "id": "ganxiao", "label": "干笑", "emotion": "awkward", "palette": "sand", "face": { "eyes": "wink", "mouth": "wavy_awkward", "brows": "raised", "extras": ["sweat_drop"], "gesture": "clap" }, "tags": ["干笑", "尴尬", "赔笑", "嘿嘿", "圆场"] },
+    { "id": "aixin", "label": "爱你", "emotion": "love", "palette": "pink", "face": { "eyes": "heart", "mouth": "grin_open", "brows": "raised", "extras": ["hearts"], "gesture": "hug_arms" }, "tags": ["爱你", "爱心", "喜欢", "比心", "好喜欢"] },
+    { "id": "tietie", "label": "贴贴", "emotion": "love", "palette": "peach", "face": { "eyes": "closed_up", "mouth": "smile_small", "brows": "normal", "extras": ["hearts", "blush_lines"], "gesture": "hug_arms" }, "tags": ["贴贴", "抱抱", "抱", "求安慰", "蹭蹭"] },
+    { "id": "kun", "label": "好困", "emotion": "sleepy", "palette": "indigo", "face": { "eyes": "sleep_closed", "mouth": "open_talk", "brows": "hidden", "extras": ["zzz_bubble"], "gesture": "none" }, "tags": ["困", "好困", "睡觉", "哈欠", "犯困"] },
+    { "id": "moyu", "label": "摸鱼", "emotion": "sleepy", "palette": "teal", "face": { "eyes": "half_liddroop", "mouth": "smile_small", "brows": "normal", "extras": ["music_note"], "gesture": "none" }, "tags": ["摸鱼", "摆烂", "偷懒", "躺平", "休息"] },
+    { "id": "sikao", "label": "让我想想", "emotion": "think", "palette": "mint", "face": { "eyes": "side_eye", "mouth": "flat", "brows": "raised", "extras": ["question_marks"], "gesture": "point" }, "tags": ["思考", "想想", "琢磨", "嗯"] },
+    { "id": "miyan", "label": "观察", "emotion": "think", "palette": "violet", "face": { "eyes": "angry_slant", "mouth": "flat", "brows": "angry", "extras": ["star"], "gesture": "none" }, "tags": ["观察", "审视", "眯眼", "怀疑", "盯"] },
+    { "id": "jiayou", "label": "加油", "emotion": "hype", "palette": "orange", "face": { "eyes": "happy_arc", "mouth": "open_talk", "brows": "raised", "extras": ["flame"], "gesture": "cheer_arms" }, "tags": ["加油", "冲", "努力", "拼了", "打气"] },
+    { "id": "ganbei", "label": "干杯", "emotion": "hype", "palette": "lemon", "face": { "eyes": "wink", "mouth": "grin_open", "brows": "raised", "extras": ["sparkle"], "gesture": "point" }, "tags": ["干杯", "庆祝", "撒花", "太好了"] },
+    { "id": "chigua", "label": "吃瓜", "emotion": "hype", "palette": "green", "face": { "eyes": "sparkle", "mouth": "smile_small", "brows": "normal", "extras": ["star"], "gesture": "clap" }, "tags": ["吃瓜", "看戏", "八卦", "围观"] },
+    { "id": "nihao", "label": "你好呀", "emotion": "neutral", "palette": "sky", "face": { "eyes": "happy_arc", "mouth": "smile_small", "brows": "normal", "extras": ["sparkle"], "gesture": "cheer_arms" }, "tags": ["你好", "打招呼", "嗨", "早上好", "晚上好", "问候"] },
+    { "id": "enhen", "label": "嗯哼", "emotion": "neutral", "palette": "cream", "face": { "eyes": "dot", "mouth": "smile_small", "brows": "normal", "extras": [], "gesture": "none" }, "tags": ["嗯", "好", "知道了", "收到", "附和"] },
+    { "id": "wanan", "label": "晚安", "emotion": "neutral", "palette": "indigo", "face": { "eyes": "closed_up", "mouth": "smile_small", "brows": "normal", "extras": ["moon", "star"], "gesture": "hug_arms" }, "tags": ["晚安", "睡了", "再见", "拜拜", "明天见"] },
+    { "id": "qiuqiu", "label": "求求了", "emotion": "sad", "palette": "blue", "face": { "eyes": "teary", "mouth": "pout", "brows": "sad_worry", "extras": ["tear_drops", "blush_lines"], "gesture": "hug_arms" }, "tags": ["求求了", "拜托", "求你", "哀求"] },
+    { "id": "xinqing", "label": "心情好", "emotion": "happy", "palette": "green", "face": { "eyes": "closed_up", "mouth": "grin_open", "brows": "normal", "extras": ["music_note", "petal"], "gesture": "clap" }, "tags": ["心情好", "愉快", "舒服", "美滋滋"] },
+    { "id": "jubu", "label": "拒绝", "emotion": "angry", "palette": "red", "face": { "eyes": "angry_slant", "mouth": "flat", "brows": "angry", "extras": ["shock_lines"], "gesture": "point" }, "tags": ["拒绝", "不要", "达咩", "不行", "驳回"] },
+    { "id": "liwu", "label": "礼物", "emotion": "love", "palette": "rose", "face": { "eyes": "sparkle", "mouth": "grin_open", "brows": "raised", "extras": ["hearts", "star"], "gesture": "point" }, "tags": ["礼物", "奖励", "给你", "惊喜"] },
+    { "id": "tounai", "label": "偷笑", "emotion": "happy", "palette": "sand", "face": { "eyes": "happy_arc", "mouth": "smile_small", "brows": "normal", "extras": ["blush_lines"], "gesture": "facepalm" }, "tags": ["偷笑", "窃笑", "憋笑", "看热闹"] }
+  ],
+  "palettes": {
+    "peach": "#FFD9C2", "lemon": "#FFF2B8", "mint": "#C9F2DD", "lavender": "#E0D4F7",
+    "blue": "#CFE4FF", "red": "#FFCDCF", "orange": "#FFDFAE", "pink": "#FFD3E8",
+    "rose": "#FFC9D6", "cyan": "#C7F0F7", "gray": "#E4E6EB", "slate": "#D6DEE8",
+    "sand": "#F3E3C3", "indigo": "#D6DBFA", "teal": "#C6EFE6", "violet": "#E5D6FA",
+    "green": "#D5F3C8", "sky": "#CDE9FF", "cream": "#F8EEDC"
+  }
+}

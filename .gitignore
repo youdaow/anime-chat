@@ -1,0 +1,44 @@
+# ---- 构建 / 运行环境 ----
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.env
+.DS_Store
+_probe.png
+
+# ---- 调试残留 ----
+chrome_err.txt
+dom_dump.txt
+
+# ---- 表情仓库的工作副本（自带 .git，16MB，不该嵌套进主仓库）----
+pack-export/
+
+# ---- 运行时数据：默认全排除，只放行「角色」和「表情库」----
+# 必须写 data/* 而不是 data/：git 一旦跳过被忽略的目录就不再进去，
+# 里面的 ! 放行规则根本不会生效（已实测）。
+data/*
+!data/characters/
+!data/stickers/
+!data/stickers_meta.json
+
+# 白名单之外，data/ 里这些**绝对不能上传**，再显式钉一遍做双保险：
+#   animechat.db    所有聊天记录（会话 + 消息 + 未读水位）
+#   settings.json   模型 Key、飞书 App Secret、GitHub Token 全在这里
+#   feishu.*        桥接进程锁
+data/animechat.db
+data/settings.json
+data/feishu.lock
+data/feishu.pid
+
+# ---- 「我」这一侧的头像 ----
+# AVATAR_DIR 指向包里的 assets/avatars，所以你上传的自己的头像会落在 src/ 下、
+# 跟着代码一起上传。角色头像要留（属于角色设定），me* 是你本人的图。
+src/animechat/assets/avatars/me.png
+src/animechat/assets/avatars/me-src.png
+
+# ---- 已删除的个人头像（防止误删后 git 认为文件被删）----
+# 注意：如果以后有其他用户上传的头像，也要按这个方式处理
+src/animechat/assets/avatars/me.png
+src/animechat/assets/avatars/me-src.png

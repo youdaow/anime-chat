@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover：不加这条，iOS Safari 的 env(safe-area-inset-*) 永远是 0，
+     手机上的底部导航和发送键会被手势条压住（样式里靠它留白）。 -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>二次元聊天 AI · 会发表情包的那种</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🌸</text></svg>">
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <!-- 品牌头部整个去掉：本地自用工具不需要自我介绍。收起侧栏的按钮挪到了底部导航，
+         不能放进 .side-search——窄屏媒体查询把这一行整个 display:none，按钮会被一起藏掉。 -->
+    <div class="side-search">
+      <input id="side-q" type="search" placeholder="搜索角色 / 会话" autocomplete="off">
+    </div>
+
+    <div class="side-scroll">
+      <section class="side-block">
+        <h2 class="side-title"><span>角色</span>
+          <span class="side-tools">
+            <button id="btn-new-char" title="新建角色">＋新建</button>
+            <button id="btn-ai-char" title="输入角色名和出处，AI 自动生成角色卡并添加">AI 生成</button>
+            <label class="file-btn" title="导入 JSON / PNG 角色卡">导入<input type="file" id="file-card" accept=".json,.png,.zip" hidden></label>
+          </span>
+        </h2>
+        <div id="char-list" class="char-list"></div>
+      </section>
+
+      <section class="side-block">
+        <h2 class="side-title"><span>会话</span><span class="side-tools">
+          <button id="btn-new-conv" title="和当前角色新开一轮">＋新会话</button>
+          <button id="btn-new-group" title="拉两个以上角色建群，让他们互相聊">＋群聊</button></span></h2>
+        <div id="conv-list" class="conv-list"></div>
+      </section>
+    </div>
+
+    <!-- 表情库入口挪进设置了；这里只留常驻功能 -->
+    <nav class="side-nav">
+      <button data-panel="settings" title="设置">设置</button>
+      <button data-panel="about" title="关于与自检">关于</button>
+      <button id="btn-theme" class="theme-btn" title="切换深浅色">☾</button>
+      <button id="btn-sfx" class="icon-btn" title="发送 / 收到消息的音效开关">🔊</button>
+      <button id="btn-collapse" class="icon-btn" title="收起 / 展开侧栏">«</button>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <header class="chat-head" id="chat-head" hidden>
+      <button class="avatar-btn" id="head-avatar" title="编辑角色"></button>
+      <div class="head-info">
+        <b id="head-name">—</b>
+        <span id="head-title"></span>
+      </div>
+      <div class="head-chips" id="head-chips"></div>
+      <div class="head-actions">
+        <button id="btn-context" title="看看这次真正发给模型的内容">上下文</button>
+        <button id="btn-compact" title="把较早的对话压缩成角色记忆">总结记忆</button>
+        <button id="btn-del-conv" title="删除当前会话">删除</button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner" hidden></div>
+
+    <div class="messages" id="messages"></div>
+
+    <div class="picker" id="picker" hidden>
+      <div class="picker-head">
+        <input id="picker-q" type="search" placeholder="搜表情（标签：傲娇、加油、无语…）">
+        <div class="picker-tabs" id="picker-tabs">
+          <button data-tab="all" class="on">全部</button>
+          <button data-tab="favorite">收藏</button>
+          <button data-tab="builtin">内置</button>
+          <button data-tab="user">我的</button>
+          <button data-tab="web">联网搜索</button>
+        </div>
+        <button id="picker-close" class="close">×</button>
+      </div>
+      <div class="picker-emotions" id="picker-emotions"></div>
+      <div class="picker-grid" id="picker-grid"></div>
+      <div class="picker-foot" id="picker-foot"></div>
+    </div>
+
+    <footer class="composer" id="composer" hidden>
+      <!-- 群聊专用：让 AI 之间自己接话，不用你每句都喂 -->
+      <div class="group-bar" id="group-bar" hidden>
+        <span class="group-who" id="group-who"></span>
+        <button id="btn-ai-next" title="让下一个角色接上一句">让 TA 接话</button>
+        <button id="btn-ai-loop" title="不用你插话，让她们自己聊几轮">自己聊几轮</button>
+      </div>
+      <div class="attach-row" id="attach-row" hidden></div>
+      <div class="composer-row">
+        <!-- 图标换成「贴纸卡」：原来两张 emoji 脸并排，分不出哪个是选表情、哪个是传图。
+             SVG 用 currentColor，深浅主题都跟文字色走，不会像 emoji 那样在深色下发灰。 -->
+        <button id="btn-pick" class="round" title="发表情包（挑一张甩出去）" aria-label="发表情包">
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 14.5V6.2A2.2 2.2 0 0 0 17.8 4H6.2A2.2 2.2 0 0 0 4 6.2v11.6A2.2 2.2 0 0 0 6.2 20h8.3z"/>
+            <path d="M20 14.5h-3.9a1.8 1.8 0 0 0-1.8 1.8V20"/>
+            <path d="M8.6 10.2h.01M13.4 10.2h.01"/>
+            <path d="M8.9 13.6c.8.9 1.7 1.3 2.6 1.3s1.8-.4 2.6-1.3"/>
+          </svg>
+        </button>
+
+        <textarea id="input" rows="1" placeholder="说点什么…（Enter 发送 / Shift+Enter 换行）"></textarea>
+        <button id="btn-send" class="send" title="发送">发送</button>
+      </div>
+      <div class="composer-hint" id="composer-hint"></div>
+    </footer>
+  </main>
+</div>
+
+<div class="modal-root" id="modal-root" hidden>
+  <div class="modal-backdrop" id="modal-backdrop"></div>
+  <div class="modal" id="modal"><div class="modal-body" id="modal-body"></div></div>
+</div>
+<div id="toast-root" class="toast-root"></div>
+<noscript>这个界面需要 JavaScript。</noscript>
+<script type="module" src="/web/app.js"></script>
+</body>
+</html>
