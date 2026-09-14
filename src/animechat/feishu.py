@@ -114,6 +114,8 @@ def extract_text(message_type: str, content: str) -> tuple[str, str]:
         return _flatten_post(content), ""
     if message_type == "image":
         return "", "图片我还看不了，用文字说说是什么？"
+    if message_type == "sticker":
+        return "", "表情包我还看不了，用文字说说你想表达什么？"
     if message_type == "audio":
         return "", "语音我还听不了，打字说吧。"
     if message_type == "file":
