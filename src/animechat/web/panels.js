@@ -698,6 +698,15 @@ function feishuFieldset(f, s) {
       el("span", { text: "回复带表情包图" }),
       el("span", { class: "tip", text: "打开会把角色的表情当真图发到飞书；关掉则只留文字。也可以在飞书里发「/表情 off」单独关某个会话。" }),
     ]),
+    el("label", { class: "check-field" }, [
+      f.feishu_proactive,
+      el("span", { text: "沉默时角色主动找我" }),
+      el("span", { class: "tip", text: "开了之后，你在飞书里超过一段时间没说话，角色会自己找你聊（只在私聊生效，群里不会插话）。关掉就永远只在你说话之后才回。也可以在飞书里发「/主动 off」单独关某个会话。" }),
+    ]),
+    el("div", { class: "grid-2" }, [
+      field("沉默多久算该主动（分钟）", f.feishu_idle, "太小会变成夺命连环催。120 = 两小时没消息就主动一次。"),
+      field("每天最多主动几条", f.feishu_daily, "防刷屏也省额度，跨天自动清零。"),
+    ]),
   ]);
 }
 
@@ -862,6 +871,9 @@ export async function openSettings(ctx) {
       .concat((state.characters || []).map((c) => [c.id, c.name + (c.title ? " · " + c.title : "")])),
       s.feishu_character || ""),
     feishu_sticker: el("input", { type: "checkbox", checked: s.feishu_stickers !== false }),
+    feishu_proactive: el("input", { type: "checkbox", checked: !!s.feishu_proactive }),
+    feishu_idle: el("input", { type: "number", min: "10", max: "1440", step: "10", value: String(s.feishu_idle_min || 120) }),
+    feishu_daily: el("input", { type: "number", min: "1", max: "50", value: String(s.feishu_daily_max || 10) }),
   };
   /* 哪几格该摆出来跟着接入方式走：内置 Mock 连地址和 Key都不需要，摆着只会让人以为必填。
      预置平台（有 base_url）把地址填好并锁成只读 —— 那是官方固定地址，手打只会打错；
@@ -934,6 +946,9 @@ export async function openSettings(ctx) {
     feishu_app_id: f.app_id.value.trim(),
     feishu_character: f.feishu_char.value,
     feishu_stickers: !!f.feishu_sticker.checked,
+    feishu_proactive: !!f.feishu_proactive.checked,
+    feishu_idle_min: Number(f.feishu_idle.value),
+    feishu_daily_max: Number(f.feishu_daily.value),
   });
   const secrets = () => {
     const out = {};

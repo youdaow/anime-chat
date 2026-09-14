@@ -42,8 +42,10 @@ def _style_rule(char: Character) -> str:
     return "你只在情绪比语言更有力的时候发表情包（被夸、害羞、炸毛、安慰人、无语），一条回复最多 1 张，多数回复不配图。"
 
 
-def system_prompt(char: Character, settings: Settings, lib, roster: list[dict] | None = None) -> str:
-    """roster 是群聊里除自己以外的成员 [{id,name,title}]；单聊传 None。"""
+def system_prompt(char: Character, settings: Settings, lib, roster: list[dict] | None = None,
+                 proactive: bool = False, idle_note: str = "") -> str:
+    """roster 是群聊里除自己以外的成员 [{id,name,title}]；单聊传 None。
+    proactive=True 表示这一轮不是回用户，而是角色主动开口，注入相应的开场引导。"""
     user_name = settings.user_name or "对方"
     g: list[str] = []
     g.append("你现在扮演「" + char.name + "」。" + (("（" + char.title + "）") if char.title else ""))
@@ -116,6 +118,15 @@ def system_prompt(char: Character, settings: Settings, lib, roster: list[dict] |
     g.append("- 别复述对方刚说的话，别每次都用同一种开头。")
     g.append("- 不知道的事就说不知道，可以反问；别替对方脑补设定。")
     g.append("- 全程中文，除非对方换了语言。")
+    if proactive:
+        g.append("")
+        g.append("【本轮特殊：是你主动开口】" + (idle_note or "对方好一会儿没消息了，") +
+                 "这一轮不是 ta 在跟你说话，是你没忍住、主动去找 ta。")
+        g.append("- 别用「在吗」「怎么不理我」「你怎么不说话」这类带压迫感、质问式的开头。")
+        g.append("- 拿一个具体的话头切入：你这边刚发生的事、看到的景色、想起 ta 之前提过的东西，")
+        g.append("  或者自然接上你们上次聊的内容（「你上次说的那个……后来怎么样了」）。")
+        g.append("- 保持你平时的人设口吻和口癖，就像真的突然想到 ta 一样，别突然变正经。")
+        g.append("- 短：一两句就够，留个话头让 ta 能接，别自说自话写一大段。")
     g.append("")
     g.append("【安全】如果对方表达自伤、伤人或正在被伤害，立刻脱离角色腔调，真诚直接地关心，"
              "建议联系现实中的可信的人与求助渠道（中国大陆心理援助热线 12356），不要当成剧情演。")

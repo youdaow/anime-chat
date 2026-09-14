@@ -234,6 +234,7 @@ HELP_TEXT = (
     "· 直接说话，我用当前角色回你\n"
     "· /角色 看有哪些人；/角色 名字 换人\n"
     "· /表情 on|off 要不要真发图\n"
+    "· /主动 on|off 我沉默久了会不会主动找你（仅私聊）\n"
     "· /清空 重开一段对话（网页记录不动）\n"
     "· /状态 看当前配置\n"
     "· /帮助 再看一遍这段"
@@ -243,6 +244,7 @@ COMMAND_ALIASES = {
     "角色": "character", "char": "character", "character": "character",
     "换": "character", "人设": "character",
     "表情": "sticker", "sticker": "sticker", "stickers": "sticker",
+    "主动": "proactive", "找": "proactive", "proactive": "proactive",
     "清空": "reset", "reset": "reset", "new": "reset", "重开": "reset",
     "帮助": "help", "help": "help", "？": "help", "?": "help",
     "状态": "status", "status": "status",
@@ -458,6 +460,95 @@ def wants_stickers(db: Any, chat_id: str, s: Any) -> bool:
     return bool(getattr(s, "feishu_stickers", True))
 
 
+# --------------------------------------------------------------- 主动发言（沉默后）
+LAST_PREFIX = "feishu.last."          # prefs: 这个会话最后一次「真人说话」的时间（unix 秒）
+CTYPE_PREFIX = "feishu.ctype."        # prefs: 这个 chat_id 是 p2p 还是 group
+QUOTA_PREFIX = "feishu.pq."           # prefs: 某会话某天已经主动发过几条
+
+PROACTIVE_TICK = 60.0                 # 后台扫描间隔（秒）：太密白烧 CPU，太疏不够及时
+
+
+def last_key(chat_id: str) -> str:
+    return LAST_PREFIX + str(chat_id or "")
+
+
+def ctype_key(chat_id: str) -> str:
+    return CTYPE_PREFIX + str(chat_id or "")
+
+
+def day_key(ts: float) -> str:
+    """按本地日期分桶，配额天然跨天清零（不用额外的定时器去清）。"""
+    return time.strftime("%Y%m%d", time.localtime(ts))
+
+
+def quota_key(chat_id: str, ts: float) -> str:
+    return QUOTA_PREFIX + str(chat_id or "") + "." + day_key(ts)
+
+
+def read_float(raw: str, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def read_int(raw: str, default: int = 0) -> int:
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+def proactive_qualified(now: float, last_active: float, sent_today: int,
+                        daily_max: int, idle_min: int) -> tuple[bool, float]:
+    """沉默够久、没超每日上限、且这个会话真聊过，才该主动。返回 (该不该发, 已沉默秒数)。
+
+    last_active<=0 表示从没聊过 —— 绝不主动去骚扰一个「只绑定却没说过话」的会话，
+    否则刚配好桥接、还没聊，角色就冲上来发一条，像中病毒。
+    """
+    if last_active <= 0:
+        return False, 0.0
+    if daily_max <= 0 or sent_today >= daily_max:
+        return False, 0.0
+    idle = now - last_active
+    if idle < max(1, idle_min) * 60:
+        return False, 0.0
+    return True, idle
+
+
+def idle_note(seconds: float) -> str:
+    """给模型看的沉默时长，说人话（模型看见裸秒数没有体感）。"""
+    if seconds < 3600:
+        return "对方已经 " + str(max(1, int(seconds // 60))) + " 分钟没消息了"
+    if seconds < 86400:
+        return "对方已经 " + str(round(seconds / 3600, 1)) + " 小时没消息了"
+    return "对方已经 " + str(round(seconds / 86400, 1)) + " 天没消息了"
+
+
+PMODE_PREFIX = "feishu.pmode."         # prefs: on/off，单会话覆盖全局 feishu_proactive
+
+
+def pmode_key(chat_id: str) -> str:
+    return PMODE_PREFIX + str(chat_id or "")
+
+
+def proactive_enabled(db: Any, chat_id: str, s: Any) -> bool:
+    """这个会话要不要被主动找。会话级 /主动 on|off 优先，否则看全局开关。"""
+    v = db.get_pref(pmode_key(chat_id), "")
+    if v == "on":
+        return True
+    if v == "off":
+        return False
+    return bool(getattr(s, "feishu_proactive", False))
+
+
+def proactive_target(db: Any, chat_id: str) -> str:
+    """只有私聊才主动。群聊里机器人替某个角色不停插话会吵到所有人，一律不主动。
+    从没聊过的会话（没记过 chat_type）也不算目标 —— 它压根没在用。"""
+    ctype = db.get_pref(ctype_key(chat_id), "")
+    return "" if ctype == "group" else ctype
+
+
 # --------------------------------------------------------------- 去重
 class Dedupe:
     """飞书处理超时（3s）后会重推同一条事件，不去重就回两遍、还多烧一次 token。"""
@@ -653,6 +744,12 @@ def run_bot(settings: Any, *, echo: Callable[[str], None] = print) -> int:
     worker.start()
     bridge = Bridge(state, client, lark, worker)
 
+    # 主动发言的后台循环：必须在 worker 的 loop 上建 task（协程对象在别的 loop
+    # 上创建会直接 RuntimeError）。
+    async def _boot_proactive() -> None:
+        bridge.proactive_task = asyncio.ensure_future(bridge.proactive_scan())
+    asyncio.run_coroutine_threadsafe(_boot_proactive(), worker.loop)
+
     def handler(data: Any) -> None:
         try:
             bridge.handle_event(data)
@@ -700,6 +797,7 @@ class Bridge:
         # 会话级锁只在同一个 loop 里用（全部 handler 都 submit 到 worker 的 loop），
         # 所以这里用普通 dict 存 asyncio.Lock 是安全的。
         self._locks: dict[str, asyncio.Lock] = {}
+        self.proactive_task: Optional[asyncio.Future] = None
 
     # -- SDK 回调入口：必须立刻返回
     def handle_event(self, data: Any) -> None:
@@ -747,6 +845,11 @@ class Bridge:
             db = store()
             chars = book().list()
 
+            # 记一笔「这个会话刚才有真人活动」，主动发言的沉默计时从这里取起点。
+            # 放在命令分支之前：就算对方只发了个 /角色，也算 ta 在线，不该被主动催。
+            db.set_pref(last_key(chat_id), str(time.time()))
+            db.set_pref(ctype_key(chat_id), chat_type)
+
             kind, arg = parse_command(text)
             cmd = canonical_command(kind)
             if cmd:
@@ -792,13 +895,79 @@ class Bridge:
             except Exception:
                 pass
 
+    # --------------------------------------------------------- 主动发言（沉默后）
+    async def proactive_scan(self) -> None:
+        """每 tick 扫一遍所有绑定，把沉默够久的私聊交给角色主动开口。
+
+        跑在 worker 那个 loop 上，和收消息同一个线程 —— 所以对 _locks / client
+        的访问天然跟事件处理串行，不需要再加跨线程锁。
+        """
+        from .config import load_settings
+        from .store import store
+
+        while True:
+            try:
+                await asyncio.sleep(PROACTIVE_TICK)
+                s = (self._load_settings or load_settings)()
+                self.state.s = s
+                db = store()
+                now = time.time()
+                for chat_id in list(list_bindings(db)):
+                    try:
+                        await self._maybe_proactive(db, s, chat_id, now)
+                    except Exception as exc:
+                        self.state.failures += 1
+                        print("[feishu] 主动发言出错（" + str(chat_id)[:14] + "）："
+                              + str(exc)[:200])
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print("[feishu] 主动扫描异常：" + str(exc)[:200])
+
+    async def _maybe_proactive(self, db: Any, s: Any, chat_id: str, now: float) -> None:
+        from .characters import book
+
+        if proactive_target(db, chat_id) != "p2p":
+            return                                   # 群聊 / 没聊过的，一律不主动
+        if not proactive_enabled(db, chat_id, s):
+            return
+        last_active = read_float(db.get_pref(last_key(chat_id), ""))
+        sent_today = read_int(db.get_pref(quota_key(chat_id, now), ""), 0)
+        ok, idle = proactive_qualified(
+            now, last_active, sent_today,
+            int(getattr(s, "feishu_daily_max", 10) or 0),
+            int(getattr(s, "feishu_idle_min", 120) or 0))
+        if not ok:
+            return
+        cid = bound_character(db, chat_id, s.feishu_character)
+        char = book().get(cid) if cid else None
+        if char is None:
+            return
+        lock = self._locks.setdefault(chat_id, asyncio.Lock())
+        if lock.locked():
+            return                                   # 正在处理对方消息，别插话
+        async with lock:
+            # 拿锁这几秒对方可能刚回了消息：再确认一次，避免「刚回就被催」。
+            if read_float(db.get_pref(last_key(chat_id), "")) > last_active:
+                return
+            result = await self._chat(s, char, "", chat_id, "p2p", db,
+                                      proactive=True, idle=idle_note(idle))
+            db.set_pref(quota_key(chat_id, now), str(sent_today + 1))
+        await self._deliver(result, chat_id, "", s, db)
+
     # --------------------------------------------------------- 调本机聊天接口
     async def _chat(self, s: Any, char: Any, text: str, chat_id: str,
-                    chat_type: str, db: Any):
+                    chat_type: str, db: Any, proactive: bool = False,
+                    idle: str = ""):
         import httpx
 
         conv_id = self._conversation(db, char, chat_id, chat_type)
-        payload = {"conversation_id": conv_id, "content": text}
+        if proactive:
+            # 主动开口：不带 content（否则服务端会当成用户发言写进历史），
+            # 走 ChatReq.proactive 那条口子。
+            payload = {"conversation_id": conv_id, "proactive": True, "idle_note": idle}
+        else:
+            payload = {"conversation_id": conv_id, "content": text}
         out = ChatResult()
         try:
             timeout = httpx.Timeout(max(30.0, float(s.llm_timeout) + 30), connect=10)
@@ -858,6 +1027,10 @@ class Bridge:
             await self._send(
                 "当前角色：" + (char.name if char else "（还没选）") + "\n"
                 + "表情包：" + ("开着" if wants_stickers(db, chat_id, s) else "关着") + "\n"
+                + "主动找你：" + ("会（沉默 " + str(int(getattr(s, "feishu_idle_min", 120) or 0))
+                                  + " 分钟后，每天≤"
+                                  + str(int(getattr(s, "feishu_daily_max", 10) or 0)) + "条）"
+                                 if proactive_enabled(db, chat_id, s) else "不会") + "\n"
                 + "模型：" + ("Mock（没填 Key）" if s.mock_mode else s.llm_model) + "\n"
                 + f"桥接已运行 {up // 60} 分 {up % 60} 秒，处理 {self.state.processed} 条",
                 chat_id, mid)
@@ -893,6 +1066,24 @@ class Bridge:
                 return
             db.set_pref(mode_key(chat_id), "on" if want else "off")
             await self._send("好，" + ("回复会带上表情包图。" if want else "只发文字。"),
+                             chat_id, mid)
+            return
+        if cmd == "proactive":
+            want = sticker_mode_text(arg)
+            if want is None:
+                on = proactive_enabled(db, chat_id, s)
+                cap = int(getattr(s, "feishu_daily_max", 10) or 0)
+                idle = int(getattr(s, "feishu_idle_min", 120) or 0)
+                await self._send(
+                    "主动找你我" + ("会做" if on else "不会做") + "。\n"
+                    + ("沉默超过 " + str(idle) + " 分钟，我会主动开口，每天最多 " + str(cap) + " 条。\n"
+                       if on else "")
+                    + "（只在私聊生效，群里我不会插话）\n`/主动 on` 或 `/主动 off`。",
+                    chat_id, mid)
+                return
+            db.set_pref(pmode_key(chat_id), "on" if want else "off")
+            await self._send("好，" + ("你要是半天不理我，我会主动找你说话（仅私聊）。"
+                                       if want else "我只在你说话之后回，不主动找你。"),
                              chat_id, mid)
             return
         if cmd == "reset":

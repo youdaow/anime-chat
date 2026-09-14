@@ -46,6 +46,9 @@ ENV_KEYS = {
     "feishu_character",
     "feishu_api_base",
     "feishu_stickers",
+    "feishu_proactive",
+    "feishu_idle_min",
+    "feishu_daily_max",
 }
 
 SECRET_FIELDS = ("llm_api_key", "tenor_api_key", "giphy_api_key", "github_token", "feishu_app_secret")
@@ -149,6 +152,13 @@ class Settings(BaseModel):
     feishu_api_base: str = ""
     # 角色的表情包要不要真的发成飞书图片。关掉就只在文字里描述「[表情：xx]」。
     feishu_stickers: bool = True
+    # 沉默后主动发言：飞书私聊里对方超过 idle_min 分钟没消息，角色就自己找 ta 说话。
+    # 只对私聊生效（群里主动发言容易吵到别人），且总开关关了那个后台循环就空转。
+    feishu_proactive: bool = False
+    # 沉默多久算「该主动了」（分钟）。太小会变成夺命连环催。
+    feishu_idle_min: int = 120
+    # 每个会话每天最多主动发几条（防刷屏 + 省额度）。跨天自动清零。
+    feishu_daily_max: int = 10
 
     @field_validator("llm_provider")
     @classmethod

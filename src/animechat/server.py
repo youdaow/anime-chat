@@ -40,6 +40,11 @@ class ChatReq(BaseModel):
     # 让 AI 直接接上一句继续聊。
     speaker: str = ""
     auto: bool = False
+    # 主动开口：这一轮不是回用户，而是角色自己找用户说话（飞书桥接的「沉默后主动」用）。
+    # 和 auto 的区别：auto 是群聊里接上一句（必须群聊，否则 400）；proactive 单聊也允许，
+    # 并且会往系统提示里注入「是你主动开口」的引导，避免角色写出质问式的开头。
+    proactive: bool = False
+    idle_note: str = ""         # 给模型看的沉默说明，例如「对方已经 3 小时没消息了」
 
 
 class ConvReq(BaseModel):
@@ -163,7 +168,8 @@ async def attach_avatar_from_web(char: Character, s: Settings,
 
 
 def build_messages(char: Character, settings: Settings, conv_id: int, summary: str = "",
-                 speaker: str = "", roster: list[dict] | None = None) -> tuple[list[dict], int]:
+                 speaker: str = "", roster: list[dict] | None = None,
+                 proactive: bool = False, idle_note: str = "") -> tuple[list[dict], int]:
     lib = library()
 
     def word(sid: str) -> str:
@@ -176,7 +182,9 @@ def build_messages(char: Character, settings: Settings, conv_id: int, summary: s
         return w if not re.search(r"[\[\]［］:：\n]", w) else sid
 
     history = store().history_for_prompt(conv_id, label_of=word)
-    msgs = [{"role": "system", "content": prompt.system_prompt(char, settings, lib, roster=roster)}]
+    msgs = [{"role": "system", "content": prompt.system_prompt(char, settings, lib, roster=roster,
+                                                              proactive=proactive,
+                                                              idle_note=idle_note)}]
     msgs.extend(prompt.history_messages(char, history, settings, summary=summary,
                                       speaker=speaker, roster=roster))
     return msgs, sum(len(str(m.get("content", ""))) for m in msgs)
@@ -816,6 +824,9 @@ def create_app(settings_override: Settings | None = None) -> Any:
             tail = [m for m in prior if m.role == "assistant"]
             if tail:
                 db.delete_from(conv.id, tail[-1].id)
+        elif payload.proactive:
+            # 角色主动开口：不写用户消息，单聊群聊都允许（跟 auto 的关键差别）。
+            pass
         elif payload.auto:
             # AI 互聊：这一轮没有用户发言，让下一个角色直接接上一句
             if not group:
@@ -828,7 +839,9 @@ def create_app(settings_override: Settings | None = None) -> Any:
 
         fresh = db.get_conversation(conv.id)
         msgs, prompt_chars = build_messages(char, s, conv.id, fresh.summary if fresh else "",
-                                            speaker=speaker_id, roster=roster)
+                                            speaker=speaker_id, roster=roster,
+                                            proactive=payload.proactive,
+                                            idle_note=payload.idle_note)
         seed = (conv.id * 7919 + int(time.time())) % 999983
 
         async def stream() -> AsyncIterator[str]:
