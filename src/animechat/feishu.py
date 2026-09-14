@@ -1223,20 +1223,41 @@ class Bridge:
             return P2CardActionTriggerResponse(
                 {"toast": {"type": "warning", "content": "没选到角色"}})
         header = _get(data, "header") or {}
-        # 飞书重推同一回调（超时没回帧）时，别换两遍：event_id 为主，选中项兜底。
-        if self.state.dedupe.seen(str(_get(header, "event_id") or ""),
-                                  "card:" + chat_id + ":" + cid):
+        # 飞书重推同一回调（超时没回帧）时，别换两遍：只认 event_id
+        if self.state.dedupe.seen(str(_get(header, "event_id") or "")):
             return P2CardActionTriggerResponse(
                 {"toast": {"type": "info", "content": "已经在切了"}})
 
         def factory():
             return self._apply_card_switch(chat_id, cid)
         self.worker.submit(factory)
-        return P2CardActionTriggerResponse(
-            {"toast": {"type": "success", "content": "好，这就换"}})
+        
+        # 立即返回一个 toast 响应，worker 会发送更新后的卡片
+        # 这样用户就能在同一个会话中继续切换角色
+        return P2CardActionTriggerResponse({
+            "toast": {"type": "success", "content": "好，这就换"}
+        })
+
+    async def _send_updated_character_card(self, chat_id: str, current_char_id: str) -> None:
+        """发送一张更新后的角色选择卡片，当前选中的角色会显示在卡片文本中。"""
+        from .characters import book
+        from .config import load_settings
+
+        try:
+            s = (self._load_settings or load_settings)()
+            self.state.s = s
+            chars = book().list()
+            current_char = book().get(current_char_id)
+            current_name = getattr(current_char, "name", "") if current_char else "未选择"
+            
+            # 构建新的卡片
+            card = character_card(chars, current_char_id)
+            await self._send_card(card, chat_id, "")
+        except Exception as exc:
+            print(f"[feishu] 发送更新卡片失败：{exc}")
 
     async def _apply_card_switch(self, chat_id: str, char_id: str) -> None:
-        """worker 线程里做实事：找角色、换绑定、在飞书里说一句确认。"""
+        """worker 线程里做实事：找角色、换绑定、在飞书里说一句确认并发送更新后的卡片。"""
         from .characters import book
         from .config import load_settings
         from .store import store
@@ -1256,6 +1277,8 @@ class Bridge:
             self._switch_to(db, char, chat_id)
             await self._send("好，接下来我是" + str(getattr(char, "name", "")) + "。",
                              chat_id, "")
+            # 换人成功后，发送一张更新后的卡片到同一个会话
+            await self._send_updated_character_card(chat_id, char_id)
         except Exception as exc:
             self.state.failures += 1
             print("[feishu] 卡片换角色失败：" + str(exc)[:200])
