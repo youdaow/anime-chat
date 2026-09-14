@@ -25,6 +25,7 @@ import asyncio
 import io
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -298,6 +299,63 @@ def sticker_mode_text(arg: str) -> Optional[bool]:
     return None
 
 
+# --------------------------------------------------------------- 角色选择卡片
+CARD_MAX_OPTIONS = 100          # 下拉里最多列几个；再多飞书会嫌卡片太大，且没人能滚
+
+
+def character_card(chars: Iterable[Any], current_id: str) -> str:
+    """造「下拉选角色」的交互卡片，返回可直接塞进 content 的 JSON 字符串。
+
+    用 1.0 schema：顶层 elements，不受「客户端≥7.20 才认 2.0」限制，老版本也点得动。
+    选项 value 存角色 id（回调读 action.option 拿回来的就是它，不是显示文案）。
+    不靠 initial_index/initial_option 去高亮当前项 —— 1.0 对这些支持不齐，标错
+    反而误导；直接把「当前是谁」写进正文那行 div，最稳。
+    """
+    pool = list(chars)
+    current = next((c for c in pool
+                    if getattr(c, "id", "") == current_id), None)
+    cur_name = str(getattr(current, "name", "")) if current else "（还没选）"
+    shown = pool[:CARD_MAX_OPTIONS]
+    options = [{"text": {"tag": "plain_text",
+                         "content": (getattr(c, "name", "") or "(无名)")},
+                "value": getattr(c, "id", "")} for c in shown]
+    more = ("" if len(pool) <= CARD_MAX_OPTIONS
+            else f"\n（只列出前 {CARD_MAX_OPTIONS} 个，其余用 /角色 名字 精确切换）")
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"tag": "plain_text", "content": "选一个角色"}},
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md",
+                                    "content": f"当前：**{cur_name}**　点下面的下拉换人。{more}"}},
+            {"tag": "action", "actions": [
+                {"tag": "select_static", "name": "role_select",
+                 "placeholder": {"tag": "plain_text", "content": "选择角色"},
+                 "options": options,
+                 # behaviors[].value 必须是 object：写成字符串 SDK 反序列化会抛
+                 # UnmarshalException，回调根本进不了 handler。这里放固定标记，
+                 # 用来认出「这是我们发的换角色卡」，选中项在 action.option 里。
+                 "behaviors": [{"type": "callback", "value": {"act": "switch_role"}}]}]},
+        ],
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+def card_pick(data: Any) -> tuple[str, str, str]:
+    """从卡片回调里取 (act, 选中的角色id, chat_id)。全空表示这不是我们的卡。
+
+    act 来自 behaviors[].value（固定），选中的角色 id 来自 action.option ——
+    这俩别搞混：value 对每张换角色卡都一样，只有 option 会随用户的选择变。
+    """
+    event = _get(data, "event")
+    action = _get(event, "action")
+    ctx = _get(event, "context")
+    raw_val = _get(action, "value")
+    act = str(raw_val.get("act", "")) if isinstance(raw_val, dict) else ""
+    option = str(_get(action, "option") or "")
+    chat_id = str(_get(ctx, "open_chat_id") or "")
+    return act, option, chat_id
+
+
 # --------------------------------------------------------------- SSE 归并
 class ChatResult:
     """一次 /api/chat 的结果。"""
@@ -464,6 +522,7 @@ def wants_stickers(db: Any, chat_id: str, s: Any) -> bool:
 LAST_PREFIX = "feishu.last."          # prefs: 这个会话最后一次「真人说话」的时间（unix 秒）
 CTYPE_PREFIX = "feishu.ctype."        # prefs: 这个 chat_id 是 p2p 还是 group
 QUOTA_PREFIX = "feishu.pq."           # prefs: 某会话某天已经主动发过几条
+NEXT_PREFIX = "feishu.next."          # prefs: 这个会话下一次「该主动」的时间点（unix 秒）
 
 PROACTIVE_TICK = 60.0                 # 后台扫描间隔（秒）：太密白烧 CPU，太疏不够及时
 
@@ -499,21 +558,32 @@ def read_int(raw: str, default: int = 0) -> int:
         return default
 
 
-def proactive_qualified(now: float, last_active: float, sent_today: int,
-                        daily_max: int, idle_min: int) -> tuple[bool, float]:
-    """沉默够久、没超每日上限、且这个会话真聊过，才该主动。返回 (该不该发, 已沉默秒数)。
+def next_due_key(chat_id: str) -> str:
+    return NEXT_PREFIX + str(chat_id or "")
 
-    last_active<=0 表示从没聊过 —— 绝不主动去骚扰一个「只绑定却没说过话」的会话，
-    否则刚配好桥接、还没聊，角色就冲上来发一条，像中病毒。
+
+def proactive_interval(idle_min: int, rng: Any = None) -> float:
+    """这一次要沉默多久才主动（秒）：在基准的 0.5~2 倍之间随机。
+
+    每回都卡在整点开口太假（像闹钟不像人）。骰子在「对方刚说完话」那一刻抽一次就
+    存档，扫描只对着存档的到期点看 —— 要是每个 tick 重抽，会话会飞速朝最小值偏，
+    随机就名存实亡了。rng 可注入，测试里钉住分布。
     """
-    if last_active <= 0:
-        return False, 0.0
+    base = max(1, int(idle_min)) * 60.0
+    return base * (rng or random).uniform(0.5, 2.0)
+
+
+def proactive_due(now: float, next_at: float, sent_today: int, daily_max: int) -> bool:
+    """到了存档的到期点、且没超每日上限，才该主动。
+
+    next_at<=0 表示这个会话从没被记过（新绑定、或对方一句都没说过）—— 绝不主动，
+    免得刚配好桥接就冲上来骚扰。
+    """
+    if next_at <= 0:
+        return False
     if daily_max <= 0 or sent_today >= daily_max:
-        return False, 0.0
-    idle = now - last_active
-    if idle < max(1, idle_min) * 60:
-        return False, 0.0
-    return True, idle
+        return False
+    return now >= next_at
 
 
 def idle_note(seconds: float) -> str:
@@ -757,10 +827,21 @@ def run_bot(settings: Any, *, echo: Callable[[str], None] = print) -> int:
             state.failures += 1
             echo("[feishu] 事件处理出错：" + str(exc)[:300])
 
+    def card_handler(data: Any) -> Any:
+        # 卡片回调同步跑在飞书那条 ws 循环上，且必须回一帧（toast/card）。
+        # 这里只解析 + 把实事 submit 给 worker，绝不碰 IO；出错也别把连接带崩。
+        try:
+            return bridge.handle_card_action(data)
+        except Exception as exc:
+            state.failures += 1
+            echo("[feishu] 卡片回调处理出错：" + str(exc)[:300])
+            return None
+
     # 长连接模式下 encrypt_key / verification_token 必须传空串：鉴权只在建连时做过，
     # 推过来的都是明文，填了反而会去验一个不存在的签名。
     dispatcher = (lark.EventDispatcherHandler.builder("", "")
                   .register_p2_im_message_receive_v1(handler)
+                  .register_p2_card_action_trigger(card_handler)
                   .build())
     ws = lark.ws.Client(s.feishu_app_id.strip(), s.feishu_app_secret.strip(),
                         event_handler=dispatcher, log_level=lark.LogLevel.INFO)
@@ -845,10 +926,16 @@ class Bridge:
             db = store()
             chars = book().list()
 
-            # 记一笔「这个会话刚才有真人活动」，主动发言的沉默计时从这里取起点。
-            # 放在命令分支之前：就算对方只发了个 /角色，也算 ta 在线，不该被主动催。
-            db.set_pref(last_key(chat_id), str(time.time()))
+            # 记一笔「这个会话刚才有真人活动」。放在命令分支之前：就算对方只发了个
+            # /角色，也算 ta 在线，不该被主动催。
+            # 同时当场抽一次「下次什么时候该主动」并存档：基准值的 0.5~2 倍。
+            # 骰子必须在这抽、只抽一次 —— 扫描时每个 tick 重抽的话，会话会飞速朝
+            # 最小值偏，随机就成了摆设。
+            now = time.time()
+            db.set_pref(last_key(chat_id), str(now))
             db.set_pref(ctype_key(chat_id), chat_type)
+            db.set_pref(next_due_key(chat_id),
+                        str(now + proactive_interval(getattr(s, "feishu_idle_min", 120) or 120)))
 
             kind, arg = parse_command(text)
             cmd = canonical_command(kind)
@@ -931,13 +1018,12 @@ class Bridge:
             return                                   # 群聊 / 没聊过的，一律不主动
         if not proactive_enabled(db, chat_id, s):
             return
+        idle_min = int(getattr(s, "feishu_idle_min", 120) or 120)
+        next_at = read_float(db.get_pref(next_due_key(chat_id), ""))
         last_active = read_float(db.get_pref(last_key(chat_id), ""))
         sent_today = read_int(db.get_pref(quota_key(chat_id, now), ""), 0)
-        ok, idle = proactive_qualified(
-            now, last_active, sent_today,
-            int(getattr(s, "feishu_daily_max", 10) or 0),
-            int(getattr(s, "feishu_idle_min", 120) or 0))
-        if not ok:
+        if not proactive_due(now, next_at, sent_today,
+                             int(getattr(s, "feishu_daily_max", 10) or 0)):
             return
         cid = bound_character(db, chat_id, s.feishu_character)
         char = book().get(cid) if cid else None
@@ -947,12 +1033,16 @@ class Bridge:
         if lock.locked():
             return                                   # 正在处理对方消息，别插话
         async with lock:
-            # 拿锁这几秒对方可能刚回了消息：再确认一次，避免「刚回就被催」。
-            if read_float(db.get_pref(last_key(chat_id), "")) > last_active:
+            # 拿锁这几秒对方可能刚回了消息（会顺手把到期点推后）：再确认一次，
+            # 避免「刚回就被催」。
+            if read_float(db.get_pref(next_due_key(chat_id), "")) > next_at:
                 return
             result = await self._chat(s, char, "", chat_id, "p2p", db,
-                                      proactive=True, idle=idle_note(idle))
+                                      proactive=True,
+                                      idle=idle_note(max(0.0, now - last_active)))
             db.set_pref(quota_key(chat_id, now), str(sent_today + 1))
+            # 发完立刻重抽一次、把到期点推到下一轮，否则下个 tick 又满足会连发。
+            db.set_pref(next_due_key(chat_id), str(now + proactive_interval(idle_min)))
         await self._deliver(result, chat_id, "", s, db)
 
     # --------------------------------------------------------- 调本机聊天接口
@@ -1024,28 +1114,40 @@ class Bridge:
             cid = bound_character(db, chat_id, s.feishu_character)
             char = next((c for c in chars if getattr(c, "id", "") == cid), None)
             up = int(time.time() - self.state.started_at)
+            on = proactive_enabled(db, chat_id, s)
+            if on:
+                nxt = read_float(db.get_pref(next_due_key(chat_id), ""))
+                cap = str(int(getattr(s, "feishu_daily_max", 10) or 0))
+                if nxt <= 0:
+                    pro = "会（你下次说完话后随机等一阵，每天≤" + cap + "条）"
+                else:
+                    mins = max(0, int((nxt - time.time()) // 60))
+                    when = time.strftime("%H:%M", time.localtime(nxt))
+                    pro = "会（约 " + str(mins) + " 分钟后、" + when + " 左右，每天≤" + cap + "条）"
+            else:
+                pro = "不会"
             await self._send(
                 "当前角色：" + (char.name if char else "（还没选）") + "\n"
                 + "表情包：" + ("开着" if wants_stickers(db, chat_id, s) else "关着") + "\n"
-                + "主动找你：" + ("会（沉默 " + str(int(getattr(s, "feishu_idle_min", 120) or 0))
-                                  + " 分钟后，每天≤"
-                                  + str(int(getattr(s, "feishu_daily_max", 10) or 0)) + "条）"
-                                 if proactive_enabled(db, chat_id, s) else "不会") + "\n"
+                + "主动找你：" + pro + "\n"
                 + "模型：" + ("Mock（没填 Key）" if s.mock_mode else s.llm_model) + "\n"
                 + f"桥接已运行 {up // 60} 分 {up % 60} 秒，处理 {self.state.processed} 条",
                 chat_id, mid)
             return
         if cmd == "character":
             if not arg:
-                names = [getattr(c, "name", "") for c in chars[:20]]
-                await self._send("可聊的角色：" + "、".join(names) + "\n\n`/角色 名字` 换人。",
-                                 chat_id, mid)
+                # 发一张带下拉菜单的卡片直接点选换人；没角色时退回文字提示。
+                if chars:
+                    await self._send_card(character_card(chars,
+                                                         bound_character(db, chat_id, s.feishu_character)),
+                                          chat_id, mid)
+                else:
+                    await self._send("本机还没有角色。去 animechat 网页建一个角色，再来飞书找我。",
+                                     chat_id, mid)
                 return
             char, ambiguous = match_character(arg, chars)
             if char is not None:
-                db.set_pref(bind_key(chat_id), getattr(char, "id", ""))
-                # 换人必须换会话：同一条会话混两个角色，模型会串戏
-                db.set_pref(conv_key(chat_id), "")
+                await self._switch_to(db, char, chat_id)
                 await self._send("好，接下来我是" + str(getattr(char, "name", "")) + "。",
                                  chat_id, mid)
             elif ambiguous:
@@ -1091,6 +1193,72 @@ class Bridge:
             await self._send("重开了，刚才那段翻篇（网页里的记录还在）。", chat_id, mid)
             return
         await self._send("没这个命令。`/帮助` 看用法。", chat_id, mid)
+
+    def _switch_to(self, db: Any, char: Any, chat_id: str) -> None:
+        """把某个会话绑到 char 上，并另起一条会话。
+
+        换人必须换会话：同一条历史里混两个角色，模型会串戏。卡片回调和 /角色 名字
+        两条路都走这里，别把这两行 set_pref 抄两遍。
+        """
+        db.set_pref(bind_key(chat_id), getattr(char, "id", ""))
+        db.set_pref(conv_key(chat_id), "")
+
+    # --------------------------------------------------------- 卡片回调
+    def handle_card_action(self, data: Any) -> Any:
+        """用户在卡片上点了下拉。跑在飞书那条 ws 循环上，必须同步、快、不碰 IO。
+
+        所以这里只解析出选中的角色 id，把真正要写库的活 submit 给 worker，
+        立刻回一句 toast 让用户那边有反馈。
+        """
+        # 只 import 真正用到的：这个类构造帧的返回值。传 dict 进去，SDK 会把
+        # toast/card 递归成对象（_apply 那侧不碰 SDK，所以纯逻辑测试也能跑）。
+        from lark_oapi.event.callback.model.p2_card_action_trigger import (
+            P2CardActionTriggerResponse)
+
+        act, cid, chat_id = card_pick(data)
+        if act != "switch_role" or not chat_id:
+            return P2CardActionTriggerResponse(
+                {"toast": {"type": "info", "content": "这张卡我不认得"}})
+        if not cid:
+            return P2CardActionTriggerResponse(
+                {"toast": {"type": "warning", "content": "没选到角色"}})
+        header = _get(data, "header") or {}
+        # 飞书重推同一回调（超时没回帧）时，别换两遍：event_id 为主，选中项兜底。
+        if self.state.dedupe.seen(str(_get(header, "event_id") or ""),
+                                  "card:" + chat_id + ":" + cid):
+            return P2CardActionTriggerResponse(
+                {"toast": {"type": "info", "content": "已经在切了"}})
+
+        def factory():
+            return self._apply_card_switch(chat_id, cid)
+        self.worker.submit(factory)
+        return P2CardActionTriggerResponse(
+            {"toast": {"type": "success", "content": "好，这就换"}})
+
+    async def _apply_card_switch(self, chat_id: str, char_id: str) -> None:
+        """worker 线程里做实事：找角色、换绑定、在飞书里说一句确认。"""
+        from .characters import book
+        from .config import load_settings
+        from .store import store
+
+        try:
+            s = (self._load_settings or load_settings)()
+            self.state.s = s
+            db = store()
+            char = book().get(char_id)
+            if char is None:
+                await self._send("那个角色本机已经没有了，`/角色` 重新选一个。", chat_id, "")
+                return
+            if bound_character(db, chat_id, s.feishu_character) == char_id:
+                await self._send("现在就是" + str(getattr(char, "name", "")) + "，没换。",
+                                 chat_id, "")
+                return
+            self._switch_to(db, char, chat_id)
+            await self._send("好，接下来我是" + str(getattr(char, "name", "")) + "。",
+                             chat_id, "")
+        except Exception as exc:
+            self.state.failures += 1
+            print("[feishu] 卡片换角色失败：" + str(exc)[:200])
 
     # --------------------------------------------------------- 投递
     async def _deliver(self, result: ChatResult, chat_id: str, mid: str,
@@ -1170,6 +1338,10 @@ class Bridge:
     async def _send_image(self, image_key: str, chat_id: str, mid: str) -> bool:
         msg_type, content = image_payload(image_key)
         return await self._dispatch(msg_type, content, chat_id, mid)
+
+    async def _send_card(self, card_json: str, chat_id: str, mid: str) -> bool:
+        """发一张交互卡片。msg_type 就是字符串，不额外依赖 SDK 类型。"""
+        return await self._dispatch("interactive", card_json, chat_id, mid)
 
     async def _dispatch(self, msg_type: str, content: str, chat_id: str, mid: str) -> bool:
         from lark_oapi.api.im.v1 import (CreateMessageRequest, CreateMessageRequestBody,

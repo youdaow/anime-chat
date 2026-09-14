@@ -72,11 +72,12 @@ def cmd_feishu(args: argparse.Namespace) -> int:
             print("  [" + ("OK  " if good else "FAIL") + "] " + name
                   + ("  -> " + detail if detail else ""))
         print("-" * 62)
-        if all(g for _, g, _ in rows):
-            print("可以跑了：animechat feishu")
-            return 0
-        print("还差东西，见上面 FAIL")
-        return 1
+        ready = all(g for _, g, _ in rows)
+        print("可以跑了：animechat feishu" if ready else "还差东西，见上面 FAIL")
+        print("提示：要用「/角色」下拉卡片换人，得在飞书后台『事件与回调』里再加一条")
+        print("      回调 card.action.trigger（订阅方式同样选『使用长连接』），加完重新发布版本。")
+        print("      不加也不影响正常聊天：文字版 /角色 名字 照常能换人，只是点不了下拉。")
+        return 0 if ready else 1
     if args.unbind or args.bindings:
         from .characters import book
         from .store import store

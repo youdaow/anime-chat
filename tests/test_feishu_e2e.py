@@ -349,14 +349,19 @@ def test_handle_event_drops_bot_and_duplicates_without_touching_loop():
 
 
 def test_command_lists_characters_and_binds_one():
+    """`/角色` 无参 → 下拉卡片；`/角色 名字` → 走文字那条路照样能绑定并另起会话。"""
     with _Server() as server:
         _seed_character()
         sink = []
         bridge, s = _bridge(server, sink)
         m, sd = _event("/角色")
         asyncio.run(bridge._process(m, sd, "oc_cmd", "om_c"))
-        first = _sent(sink)[0][1]
-        assert "端到端酱" in first, first
+        # 无参：发出的是 interactive 卡片，正文里写着当前是谁
+        card_bodies = [json.loads(r.request_body.content) for _, r in sink
+                       if getattr(r, "request_body", None)
+                       and getattr(r.request_body, "msg_type", "") == "interactive"]
+        assert card_bodies, "无参 /角色 没发出卡片"
+        assert "端到端酱" in card_bodies[0]["elements"][0]["text"]["content"]
 
         m2, sd2 = _event("/角色 端到端酱")
         asyncio.run(bridge._process(m2, sd2, "oc_cmd", "om_c2"))
@@ -406,3 +411,190 @@ def test_reports_clearly_when_server_is_unreachable():
     text = _sent(sink)[0][1]
     assert "animechat run" in text, text
     worker.stop()
+
+
+# ---------------------------------------------------------------- 主动发言
+def test_user_message_arms_a_randomised_deadline():
+    """收到对方消息 → 存一个「下次什么时候主动」，落在基准的 0.5~2 倍之间。
+
+    骰子必须在这里抽一次并存档。要是留到扫描时每个 tick 重抽，会话会飞速朝最小值
+    偏过去，所谓随机就成了摆设 —— 这条钉住的就是那个设计决定。
+    """
+    with _Server() as server:
+        _seed_character()
+        sink = []
+        s = load_settings().model_copy(update={"feishu_proactive": True, "feishu_idle_min": 120})
+        bridge, s = _bridge(server, sink, s)
+        before = time.time()
+        m, sd = _event("今天好累呀")
+        asyncio.run(bridge._process(m, sd, "oc_arm", "om_a"))
+
+        db = store()
+        nxt = float(db.get_pref("feishu.next.oc_arm"))
+        # interval ∈ [120*60*0.5, 120*60*2.0] 秒 = [3600, 14400]；nxt 用 _process 内部
+        # 的 now 存，比 before 略晚，给几秒余量。
+        assert 3600 <= nxt - before <= 14405, (nxt - before) / 60
+
+        # 再发一条：到期点重新抽、且仍然在未来至少 30 分钟（不会因为刚说话就被催）。
+        # 不断言「一定比上一个晚」—— 第二次可能抽到更短的间隔，那是对的，不是 bug。
+        before2 = time.time()
+        m2, sd2 = _event("还在吗")
+        asyncio.run(bridge._process(m2, sd2, "oc_arm", "om_a2"))
+        nxt2 = float(db.get_pref("feishu.next.oc_arm"))
+        assert nxt2 >= before2 + 30 * 60, (nxt2 - before2) / 60
+
+
+def test_proactive_sends_without_replying_to_anyone():
+    """到点了 → 主动发一条，且走 create（不是 reply）。没到期 → 一条都不发。"""
+    with _Server() as server:
+        _seed_character()
+        db = store()
+        s = load_settings().model_copy(update={"feishu_proactive": True, "feishu_idle_min": 120})
+        sink = []
+        bridge, s = _bridge(server, sink, s)
+        # 手动铺一个「早就该主动」的会话状态（私聊、已绑定角色、到期点在过去）
+        db.set_pref("feishu.bind.oc_p", "e2e")
+        db.set_pref("feishu.ctype.oc_p", "p2p")
+        db.set_pref("feishu.last.oc_p", str(time.time() - 3 * 3600))
+        db.set_pref("feishu.next.oc_p", str(time.time() - 60))
+
+        asyncio.run(bridge._maybe_proactive(db, s, "oc_p", time.time()))
+
+        sent = _sent(sink)
+        assert sent, "到点了什么都没发"
+        assert all(k == "create" for k, _, _ in sent), [k for k, _, _ in sent]
+        assert all(not mid for _, _, mid in sent), "主动消息不该挂在谁下面"
+        _assert_real_reply(sink)
+        # 发完必须扣配额 + 把到期点推到下一轮，否则下个 tick 会立刻连发
+        assert db.get_pref("feishu.pq.oc_p." + time.strftime("%Y%m%d")) == "1"
+        assert float(db.get_pref("feishu.next.oc_p")) > time.time()
+
+
+def test_proactive_skips_quiet_group_and_overquota_chats():
+    """群聊、从没聊过的新绑定、配额用满的，一律不该被主动打扰。"""
+    with _Server() as server:
+        _seed_character()
+        db = store()
+        s = load_settings().model_copy(update={"feishu_proactive": True})
+        past = time.time() - 99999
+        # 群聊
+        db.set_pref("feishu.bind.oc_g", "e2e")
+        db.set_pref("feishu.ctype.oc_g", "group")
+        db.set_pref("feishu.next.oc_g", str(past))
+        # 从没聊过（没记 ctype，也没记 next）
+        db.set_pref("feishu.bind.oc_new", "e2e")
+        # 今天已经发满
+        db.set_pref("feishu.bind.oc_q", "e2e")
+        db.set_pref("feishu.ctype.oc_q", "p2p")
+        db.set_pref("feishu.next.oc_q", str(past))
+        db.set_pref("feishu.pq.oc_q." + time.strftime("%Y%m%d"), "10")
+
+        for cid in ("oc_g", "oc_new", "oc_q"):
+            sink = []
+            bridge, s2 = _bridge(server, sink, s)
+            asyncio.run(bridge._maybe_proactive(db, s2, cid, time.time()))
+            assert not sink, f"{cid} 不该被主动骚扰，却发了 {len(sink)} 条"
+
+
+# ---------------------------------------------------------------- 卡片选角色
+def _wait_worker(worker, fn, timeout=5.0):
+    """轮询等 worker 线程把那件活跑完（submit 是异步的）。fn() 返回真值即成功。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if fn():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _card_payload(option="kiriya", chat="oc_card", act="switch_role"):
+    return {"header": {"event_id": "evt_card_1", "event_type": "card.action.trigger"},
+            "event": {"operator": {"open_id": "ou_1"},
+                      "action": {"value": {"act": act}, "tag": "select_static",
+                                 "option": option, "name": "role_select"},
+                      "context": {"open_chat_id": chat, "open_message_id": "om_card"}}}
+
+
+def test_card_action_replies_a_frame_and_switches_character():
+    """点下拉 → 同步回一帧 toast，且真把会话换到人 + 另起会话 + 发确认。
+
+    handler 必须立刻返回（飞书 3s 内要帧），换人的活丢 worker。这里两步都验：
+    返回值形状对了，但绑定不能只在 handler 里就改完（那是异步线程的事）。
+    """
+    from animechat.models import Character
+
+    with _Server() as server:
+        _seed_character()                       # id=e2e 是默认
+        book().save(Character(id="kiriya", name="桐岛郁弥", greeting="早"))
+        db = store()
+        db.set_pref("feishu.bind.oc_card", "e2e")
+        db.set_pref("feishu.conv.oc_card", "12")   # 假装已有会话，换人后必须清掉
+        sink = []
+        bridge, s = _bridge(server, sink)
+
+        resp = bridge.handle_card_action(_card_payload(option="kiriya"))
+        assert resp is not None and getattr(resp, "toast", None) is not None, "没回 toast 帧"
+        # 帧必须同步就返回；绑定改动是 worker 稍后做的
+        assert _wait_worker(bridge.worker, lambda: db.get_pref("feishu.bind.oc_card") == "kiriya"), \
+            "worker 没把绑定改成选中的角色"
+        assert db.get_pref("feishu.conv.oc_card") == "", "换人没另起会话（会串戏）"
+        assert _wait_worker(bridge.worker, lambda: _sent(sink)), "没在飞书里回一句确认"
+        assert "桐岛郁弥" in "".join(t for _, t, _ in _sent(sink))
+
+
+def test_card_action_ignores_foreign_card():
+    """不是我们的卡（act 不对）：回个 info 帧，绝不乱换角色。"""
+    with _Server() as server:
+        _seed_character()
+        db = store()
+        db.set_pref("feishu.bind.oc_card", "e2e")
+        sink = []
+        bridge, s = _bridge(server, sink)
+        resp = bridge.handle_card_action(_card_payload(option="kiriya", act="like_post"))
+        assert getattr(resp, "toast", None) is not None
+        time.sleep(0.2)
+        assert db.get_pref("feishu.bind.oc_card") == "e2e", "陌生卡不该动绑定"
+
+
+def test_card_action_missing_choice_is_handled():
+    """下拉没选到值（option 空）：回 warning 帧，不切。"""
+    with _Server() as server:
+        _seed_character()
+        db = store()
+        db.set_pref("feishu.bind.oc_card", "e2e")
+        bridge, s = _bridge(server, [])
+        resp = bridge.handle_card_action(_card_payload(option=""))
+        assert getattr(resp, "toast", None) is not None
+        time.sleep(0.2)
+        assert db.get_pref("feishu.bind.oc_card") == "e2e"
+
+
+def test_card_switch_to_ghost_character_reports():
+    """选中的角色本机已删：别静默失败，回一句让人重新选。"""
+    with _Server() as server:
+        _seed_character()
+        db = store()
+        db.set_pref("feishu.bind.oc_card", "e2e")
+        sink = []
+        bridge, s = _bridge(server, sink)
+        bridge.handle_card_action(_card_payload(option="not_exist"))
+        assert _wait_worker(bridge.worker, lambda: _sent(sink)), "没回应"
+        assert "没有了" in "".join(t for _, t, _ in _sent(sink))
+        assert db.get_pref("feishu.bind.oc_card") == "e2e", "不存在的角色不该被写进绑定"
+
+
+def test_role_command_sends_an_interactive_card():
+    """在飞书打 /角色（无参）：发出去的是一条 interactive 卡片，不是纯文本。"""
+    with _Server() as server:
+        _seed_character()
+        sink = []
+        bridge, s = _bridge(server, sink)
+        m, sd = _event("/角色")
+        asyncio.run(bridge._process(m, sd, "oc_cmd", "om_c"))
+        cards = [(k, r) for k, r in sink if getattr(r, "request_body", None)
+                 and getattr(r.request_body, "msg_type", "") == "interactive"]
+        assert cards, "没发出 interactive 卡片"
+        body = json.loads(cards[0][1].request_body.content)
+        assert body["elements"][1]["actions"][0]["tag"] == "select_static"
+        opts = [o["value"] for o in body["elements"][1]["actions"][0]["options"]]
+        assert "e2e" in opts, f"下拉里选不到当前角色：{opts}"
