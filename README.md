@@ -48,12 +48,15 @@ Base URL 填好并锁成只读，你**只贴一个 Key** 就能用；最下面�
 
 | 平台 | Base URL（已预置） | 模型名示例 |
 | --- | --- | --- |
-| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
-| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-plus` |
-| Kimi | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
-| 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
-| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| 本地 Ollama | `http://127.0.0.1:11434/v1` | `qwen2.5:7b` |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-flash`（V4.1，带视觉）/ `deepseek-v4-pro`（更强） |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.2` |
+| Kimi | `https://api.moonshot.cn/v1` | `kimi-k3` |
+| 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.7-plus` / `qwen3.8-max` |
+| OpenAI | `https://api.openai.com/v1` | `gpt-6-astra`（当前旗舰） |
+| 本地 Ollama | `http://127.0.0.1:11434/v1` | `qwen3:8b` |
+
+> 模型名只是**示例**，各家几乎月月出新、旧名随时退役（比如 `deepseek-chat` 已被官方标记退役、
+> 路由到 V4.1-Flash）。别照抄——点「测试连接」拉一次对方当前的真实清单，从候选里选最准。
 
 两个容易踩的点：
 

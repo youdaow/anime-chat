@@ -69,7 +69,7 @@ SSE 事件（`POST /api/chat`，前端用 fetch + ReadableStream 手解）：
 
 ```text
 event: start     data: {"conversation_id":12,"message_id":34}
-event: meta      data: {"attempts":[{"model":"qwen-plus","http_status":200}]}   // 只有对面回 hub.attempts 时才有
+event: meta      data: {"attempts":[{"model":"qwen3.7-plus","http_status":200}]}   // 只有对面回 hub.attempts 时才有
 event: text      data: {"t":"哼，"}
 event: sticker   data: {"id":"tsun","url":"/media/builtin/tsun.png","label":"傲娇","emotion":"tsundere","auto":false}
 event: emotion   data: {"key":"tsundere","label":"傲娇"}

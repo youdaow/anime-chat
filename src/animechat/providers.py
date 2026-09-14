@@ -5,6 +5,12 @@
 停用，而将来给别人用时一定是他们自带 Key —— 所以接入方式必须是一个能选的口子，
 而不是散在界面和报错文案里的一个地址。以后要加 Anthropic 原生 / Gemini 原生 / 本地
 ollama，在这里加一条、在 llm.py 按 family 接一下实现，前端不用改。
+
+model_placeholder 只是输入框里的灰色示例，不是兜底默认值（模型名默认留空，逼用户
+要么填要么点「测试连接」拉清单）。各家都填**当前在售的最新代际**，别停留在 deepseek-chat /
+gpt-4o-mini 这种已经退役或落后的名字上：DeepSeek 官方已把 deepseek-chat 标记为退役、
+路由到 V4.1-Flash；阿里云百炼的千问已到 3.7/3.8。示例名以官方文档为准，拿不准就点
+「测试连接」从对方真实清单里选。
 """
 
 from __future__ import annotations
@@ -33,42 +39,42 @@ PROVIDERS: tuple[Provider, ...] = (
     Provider(
         key="deepseek",
         name="DeepSeek（深度求索）",
-        hint="官方地址已预置，只需填 Key。模型默认 deepseek-chat，可点「测试连接」拉清单后选。",
+        hint="官方地址已预置，只需填 Key。模型用 deepseek-flash（V4.1-Flash，带视觉）或更强的 deepseek-v4-pro；点「测试连接」拉清单。",
         base_url="https://api.deepseek.com/v1",
         key_placeholder="从 platform.deepseek.com 建的 Key（sk-…）",
-        model_placeholder="deepseek-chat",
+        model_placeholder="deepseek-flash",
     ),
     Provider(
         key="qwen",
         name="通义千问 Qwen（阿里云百炼）",
-        hint="兼容模式地址已预置。模型如 qwen-plus、qwen-max；qwen3 这类会先出思考过程。",
+        hint="兼容模式地址已预置。模型如 qwen3.7-plus（均衡）、qwen3.8-max（最强）、qwen3.8-flash（最快）；这类会先出思考过程，可在设置里关。",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         key_placeholder="百炼控制台建的 API-KEY（sk-…）",
-        model_placeholder="qwen-plus",
+        model_placeholder="qwen3.7-plus",
     ),
     Provider(
         key="glm",
         name="智谱 GLM",
-        hint="官方地址已预置（注意智谱是 /api/paas/v4，不是 /v1）。模型如 glm-4-plus。",
+        hint="官方地址已预置（注意智谱是 /api/paas/v4，不是 /v1）。模型如 glm-5.2；点「测试连接」拉最新清单。",
         base_url="https://open.bigmodel.cn/api/paas/v4",
         key_placeholder="open.bigmodel.cn 建的 Key",
-        model_placeholder="glm-4-plus",
+        model_placeholder="glm-5.2",
     ),
     Provider(
         key="kimi",
         name="Kimi（月之暗面 Moonshot）",
-        hint="官方地址已预置。模型如 moonshot-v1-8k / moonshot-v1-32k。",
+        hint="官方地址已预置。模型如 kimi-k3；点「测试连接」拉最新清单。",
         base_url="https://api.moonshot.cn/v1",
         key_placeholder="platform.moonshot.cn 建的 Key（sk-…）",
-        model_placeholder="moonshot-v1-8k",
+        model_placeholder="kimi-k3",
     ),
     Provider(
         key="openai_official",
         name="OpenAI 官方",
-        hint="api.openai.com 已预置。模型如 gpt-4o-mini；走代理就改用下面的「自定义」。",
+        hint="api.openai.com 已预置。模型如 gpt-6-astra（当前旗舰）；走代理就改用下面的「自定义」。",
         base_url="https://api.openai.com/v1",
         key_placeholder="platform.openai.com 建的 Key（sk-…）",
-        model_placeholder="gpt-4o-mini",
+        model_placeholder="gpt-6-astra",
     ),
     Provider(
         key="openai",
@@ -123,4 +129,3 @@ def options() -> list[dict]:
 
 def family_of(key: str) -> str:
     return get(key).family
-
