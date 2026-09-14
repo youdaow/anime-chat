@@ -278,7 +278,7 @@ anime-chat/
     web/              无构建前端：index.html + style.css + app.js/panels.js/ui.js
   data/               运行时生成：数据库、角色卡、表情包、settings.json
   pack-export/        一键发布生成的仓库工作副本（含 .git），不用手动碰
-  tests/              327 个测试：协议切分 / 匹配 / 角色卡 / API 端到端 / 表情仓库同步 / 未读红点 / 联网头像与手动取景 / 联网表情定义 / 接入方式与自带 Key / 自己的头像 / 飞书桥接（纯逻辑 + 真起服务真走 SSE 的端到端）
+  tests/              334 个测试：协议切分 / 匹配 / 角色卡 / API 端到端 / 表情仓库同步 / 未读红点 / 联网头像与手动取景 / 联网表情定义 / 接入方式与自带 Key / 自己的头像 / 飞书桥接（纯逻辑 + 真起服务真走 SSE 的端到端）/ 沉默后主动发言
     js/char_editor_smoke.mjs
                       在 node 里真的渲染一遍弹窗。源码断言挡不住「函数一进来就抛错」，
                       新建角色曾被这样整坏过一次（详见 tests/test_web_dialogs.py 的说明）
@@ -304,7 +304,7 @@ anime-chat/
 ## 开发
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q          # 323 passed（没装 node 时自动跳过那份渲染冒烟）
+.venv\Scripts\python.exe -m pytest -q          # 334 passed（没装 node 时自动跳过那份渲染冒烟）
 .venv\Scripts\python.exe -m animechat.cli doctor
 $env:ANIMECHAT_DEBUG=1; .venv\Scripts\python.exe -m animechat.cli run --reload
 ```
