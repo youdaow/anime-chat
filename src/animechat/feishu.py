@@ -243,6 +243,7 @@ HELP_TEXT = (
 
 COMMAND_ALIASES = {
     "角色": "character", "char": "character", "character": "character",
+    "/": "character",  # 输入 / 直接弹出角色选择卡片
     "换": "character", "人设": "character",
     "表情": "sticker", "sticker": "sticker", "stickers": "sticker",
     "主动": "proactive", "找": "proactive", "proactive": "proactive",
