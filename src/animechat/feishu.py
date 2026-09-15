@@ -49,6 +49,7 @@ CONV_PREFIX = "feishu.conv."          # prefs: feishu.conv.<chat_id> -> conversa
 GROUP_PREFIX = "feishu.group."        # prefs: feishu.group.<chat_id> -> "id,id,..." 群成员
 GROUP_TURN_GAP = 1.2                  # 群聊轮转每条之间的停顿（秒）：模拟打字、给读留时间
 GROUP_AUTO_DEFAULT = 4                # 「/群聊 自己聊」默认轮数
+GROUP_IDLE_TIMEOUT = 3600.0           # 群聊真人静默超过这么久（1 小时）自动散会回单聊
 GROUP_AUTO_MAX = 20                   # 上限，防手滑打个大数刷爆 token
 
 
@@ -516,6 +517,17 @@ def set_group(db: Any, chat_id: str, ids: list[str]) -> None:
 
 def clear_group(db: Any, chat_id: str) -> None:
     db.set_pref(group_key(chat_id), "")
+
+
+def group_expired(now: float, last_active: float, timeout: float) -> bool:
+    """群聊真人静默是否已超阈值、该自动散会。
+
+    last_active<=0（压根没记过活动）判不过期：宁可漏散一次，也别把刚建好、
+    还没来得及写时间戳的群一脚踢了。
+    """
+    if last_active <= 0:
+        return False
+    return (now - last_active) >= timeout
 
 
 def match_characters(arg: str, chars: Iterable[Any]) -> tuple[list[Any], list[str]]:
@@ -1065,6 +1077,8 @@ class Bridge:
                 now = time.time()
                 for chat_id in list(list_bindings(db)):
                     try:
+                        if await self._expire_idle_group(db, s, chat_id, now):
+                            continue           # 刚散会，这一轮就别再拿它做主动催了
                         await self._maybe_proactive(db, s, chat_id, now)
                     except Exception as exc:
                         self.state.failures += 1
@@ -1286,6 +1300,44 @@ class Bridge:
             if r.text or r.stickers:
                 await self._deliver(r, chat_id, "", s, db, prefix=tag)
 
+    def _disband_group(self, db: Any, chat_id: str) -> None:
+        """散会：清成员 + 清会话映射，回到单聊。手动 `/群聊 退` 和超时自动散会共用，
+        别两处各写一套，迟早对不齐。"""
+        clear_group(db, chat_id)
+        db.set_pref(conv_key(chat_id), "")
+
+    async def _expire_idle_group(self, db: Any, s: Any, chat_id: str, now: float) -> bool:
+        """群聊真人静默超 GROUP_IDLE_TIMEOUT：自动散会回单聊，并知会一声。
+
+        只认「真人说话」的时间（last_key 只在收到对方消息时刷新，机器人自己接话不算），
+        所以是「你一小时没搭理她们」而不是「群里一小时没动静」。返回 True 表示本轮刚
+        散会，调用方这一轮就别再拿这个会话去做主动催了——免得刚散会就被单聊骚扰。
+        """
+        from .characters import book
+
+        members = group_members(db, chat_id)
+        if len(members) < 2:
+            return False
+        last_active = read_float(db.get_pref(last_key(chat_id), ""))
+        if not group_expired(now, last_active, GROUP_IDLE_TIMEOUT):
+            return False
+        lock = self._locks.setdefault(chat_id, asyncio.Lock())
+        if lock.locked():
+            return False                       # 正聊着 / 正在自动轮转，别中途插刀，下轮再看
+        async with lock:
+            # 排队拿锁这几秒对方可能又说话了，再判一次，避免「刚开口就被踢」。
+            last_active = read_float(db.get_pref(last_key(chat_id), ""))
+            if not group_expired(now, last_active, GROUP_IDLE_TIMEOUT):
+                return False
+            names = "、".join(str(getattr(book().get(i), "name", "?"))
+                              for i in members if book().get(i))
+            self._disband_group(db, chat_id)
+            idle_min = int(getattr(s, "feishu_idle_min", 120) or 120)
+            db.set_pref(next_due_key(chat_id), str(now + proactive_interval(idle_min)))
+            await self._send("群里一个多小时没人说话了，" + (names or "她们") +
+                             " 先撤了，回到单聊。想再拉人发 `/群聊 名字 名字`。", chat_id, "")
+            return True
+
     async def _cmd_group(self, arg: str, chat_id: str, mid: str,
                          db: Any, chars: Any, s: Any) -> None:
         """/群聊 命令：建群 / 自己聊 N 轮 / 停 / 退 / 看当前群。"""
@@ -1314,8 +1366,7 @@ class Bridge:
             if len(members) < 2:
                 await self._send("现在本来就是单聊。", chat_id, mid)
                 return
-            clear_group(db, chat_id)
-            db.set_pref(conv_key(chat_id), "")
+            self._disband_group(db, chat_id)
             await self._send("散会了，回到单聊。`/角色 名字` 找一个人单独聊。", chat_id, mid)
             return
         # 「自己聊」或「自己聊 6」或纯数字 → 自动轮转

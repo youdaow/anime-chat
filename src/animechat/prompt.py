@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 from .config import Settings
-from .emotion import EMOTION_LABELS
+from .emotion import EMOTION_KEYS, EMOTION_LABELS
 from .emotion import label as emotion_label
 from .models import Character
 
@@ -25,12 +25,22 @@ _PLACEHOLDER_HEX = re.compile(r"[0-9a-fA-F]{10}")
 def sticker_vocab(lib, limit: int = 120) -> str:
     """把库里的标签压成提示词里的「可选表情」清单。
 
+    分桶轮转，不按「取前 N 张」：库里上千张时，旧的「前 260」会被内置图和用过的
+    老图占满，新上传的那批永远挤不进词表（模型压根不知道它们存在，自然用不上）。
+    现在按情绪分桶，每个桶内部越新的越靠前，再各桶轮流取，直到够 limit——
+    保证每种情绪都有代表，且新图立刻可见。
+
     每张都带上情绪名：联网抓回来的表情名字起得随便（甚至就是一串哈希），
     「它在演什么」才是模型唯一能看懂的线索。
     """
-    entries: list[tuple[str, bool]] = []
+    from collections import defaultdict
+
+    # neutral 排到最后：它没有明确情绪，别和「开心」「傲娇」抢前面的轮转位。
+    bucket_order = [e for e in EMOTION_KEYS if e != "neutral"] + ["neutral"]
+    buckets: dict[str, list[str]] = defaultdict(list)
     seen_lines: set[str] = set()
-    for st in lib.all():
+    for st in sorted(lib.all(), key=lambda s: (-(s.created_at or 0.0),
+                                               -int(s.favorite), -s.uses, s.id)):
         # 占位哈希名的中性图不进词表（见 _PLACEHOLDER_HEX）。
         if st.emotion == "neutral" and _PLACEHOLDER_HEX.search(st.label or ""):
             continue
@@ -45,12 +55,22 @@ def sticker_vocab(lib, limit: int = 120) -> str:
         if line in seen_lines:
             continue
         seen_lines.add(line)
-        entries.append((line, st.emotion == "neutral"))
-    # 非「平常」情绪的排前面：过滤掉哈希占位图后，剩下的中性图（如「柚子厨」）
-    # 仍不该压过有明确情绪的图。sort 稳定，精挑那批的相对次序不变。
-    entries.sort(key=lambda e: e[1])
-    ordered = [e[0] for e in entries]
-    return "、".join(ordered[:limit]) or "（表情库为空，不要输出 sticker 标记）"
+        bkey = st.emotion if st.emotion in EMOTION_KEYS else "neutral"
+        buckets[bkey].append(line)
+
+    # 轮转各桶：happy 一张、love 一张、tsundere 一张…… 周而复始，直到取满 limit。
+    # 这样即便只放开 260 条，也是 11 种情绪各摊到一份，而不是被单一情绪吃满。
+    ordered: list[str] = []
+    idx = 0
+    active = [e for e in bucket_order if buckets.get(e)]
+    while len(ordered) < limit and any(idx < len(buckets[e]) for e in active):
+        for e in active:
+            if idx < len(buckets[e]):
+                ordered.append(buckets[e][idx])
+                if len(ordered) >= limit:
+                    break
+        idx += 1
+    return "、".join(ordered) or "（表情库为空，不要输出 sticker 标记）"
 
 
 def _style_rule(char: Character) -> str:
@@ -142,8 +162,11 @@ def system_prompt(char: Character, settings: Settings, lib, roster: list[dict] |
         g.append("【本轮特殊：是你主动开口】" + (idle_note or "对方好一会儿没消息了，") +
                  "这一轮不是 ta 在跟你说话，是你没忍住、主动去找 ta。")
         g.append("- 别用「在吗」「怎么不理我」「你怎么不说话」这类带压迫感、质问式的开头。")
-        g.append("- 拿一个具体的话头切入：你这边刚发生的事、看到的景色、想起 ta 之前提过的东西，")
-        g.append("  或者自然接上你们上次聊的内容（「你上次说的那个……后来怎么样了」）。")
+        g.append("- 往上翻一眼：如果你前面已经主动找过 ta、而 ta 一直没回，这次务必换一个"
+                 "全新的话头，别接着自己上次那句往下讲，更别把上次说过的话或情绪再复述一遍"
+                 "——ta 没回还重复同一件事，会显得很怪。")
+        g.append("- 拿一个具体的、和上一条主动发言不同的切入点：你这边刚新发生的事、刚看到的"
+                 "景色、想起 ta 早前提过的另一件事（「你上次说的那个……后来怎么样了」）。")
         g.append("- 保持你平时的人设口吻和口癖，就像真的突然想到 ta 一样，别突然变正经。")
         g.append("- 短：一两句就够，留个话头让 ta 能接，别自说自话写一大段。")
     g.append("")

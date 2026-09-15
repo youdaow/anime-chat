@@ -505,3 +505,18 @@ def test_group_command_aliases():
     assert feishu.canonical_command("群") == "group"
     assert feishu.canonical_command("group") == "group"
 
+
+def test_group_expired_pure():
+    now = 1_000_000.0
+    t = feishu.GROUP_IDLE_TIMEOUT
+    assert feishu.group_expired(now, now - t - 1, t) is True     # 刚好超阈值：过期
+    assert feishu.group_expired(now, now - t, t) is True         # 边界等于阈值：过期
+    assert feishu.group_expired(now, now - t + 60, t) is False   # 还差一分钟：没过期
+    assert feishu.group_expired(now, 0, t) is False              # 没记过活动：别乱踢
+    assert feishu.group_expired(now, -1, t) is False
+
+
+def test_group_idle_timeout_is_one_hour():
+    assert feishu.GROUP_IDLE_TIMEOUT == 3600.0
+
+

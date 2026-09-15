@@ -237,6 +237,49 @@ def test_group_quit_falls_back_to_single_chat(monkeypatch):
         assert not any(t.startswith("【") for _, t, _ in _sent(sink)), "退回单聊还署名，多余"
 
 
+def test_group_auto_disbands_after_idle(monkeypatch):
+    """真人静默超 GROUP_IDLE_TIMEOUT：扫描 tick 自动散会，成员清空并知会一声。"""
+    monkeypatch.setattr(feishu, "GROUP_TURN_GAP", 0.01)
+    with _Server() as server:
+        _seed_group_characters()
+        sink = []
+        bridge, s = _bridge(server, sink)
+        m, sd = _event("/群聊 甲酱 乙酱")
+        asyncio.run(bridge._process(m, sd, "oc_g5", "om_1"))
+        assert feishu.group_members(store(), "oc_g5") == ["ga", "gb"]
+
+        db = store()
+        # 还没超时：不该踢
+        sink.clear()
+        assert asyncio.run(bridge._expire_idle_group(
+            db, s, "oc_g5", time.time())) is False
+        assert feishu.group_members(db, "oc_g5") == ["ga", "gb"], "没超时不该散会"
+
+        # 把最后活动时间倒拨到两小时前，再走一次扫描
+        db.set_pref(feishu.last_key("oc_g5"), str(time.time() - 7200))
+        sink.clear()
+        assert asyncio.run(bridge._expire_idle_group(
+            db, s, "oc_g5", time.time())) is True
+        assert feishu.group_members(db, "oc_g5") == [], "超时了没散会"
+        # _disband_group 与手动 `/群聊 退` 一致：把映射清成空串（不是删键）
+        assert db.get_pref(feishu.conv_key("oc_g5"), "") == "", "会话映射没清"
+        assert "撤" in "".join(t for _, t, _ in _sent(sink)), "散会没知会用户"
+
+
+def test_group_no_activity_never_disbands(monkeypatch):
+    """从没记过活动（last_key=0）的群，别一上来就误判超时踢掉。"""
+    with _Server() as server:
+        _seed_group_characters()
+        sink = []
+        bridge, s = _bridge(server, sink)
+        db = store()
+        feishu.set_group(db, "oc_g6", ["ga", "gb"])
+        # 完全不写 last_key，模拟刚建好还没活动的极端情况
+        assert asyncio.run(bridge._expire_idle_group(
+            db, s, "oc_g6", time.time())) is False
+        assert feishu.group_members(db, "oc_g6") == ["ga", "gb"], "空时间戳被误散会"
+
+
 def test_group_needs_two_recognized_characters():
     """只认出一个角色时不建群，并说清楚只认出谁。"""
     with _Server() as server:
