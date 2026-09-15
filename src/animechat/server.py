@@ -1227,12 +1227,19 @@ def _sticker_view(st, auto: bool = False) -> dict:
 def _char_views(db, include_hidden: bool = False) -> list[dict]:
     counts: dict[str, int] = {}
     unread: dict[str, int] = {}
+    # pid -> (会话更新时间, 最后一条消息预览)。列表副标题显示「上次聊了什么」，
+    # 不再显示角色介绍。取 updated_at 最大的那条会话，不受置顶排序影响。
+    last_seen: dict[str, tuple[float, str]] = {}
     for conv in db.list_conversations():
         counts[conv.character_id] = counts.get(conv.character_id, 0) + 1
         # 未读要摊到每个成员头上：群聊里祥子回了话，从睦的列表项也该看得见红点，
         # 不然窄屏（只有角色列表、会话列表收成头像条）就永远提示不到。
         for pid in (conv.participants or [conv.character_id]):
             unread[pid] = unread.get(pid, 0) + conv.unread_count
+            if conv.preview:
+                cur = last_seen.get(pid)
+                if cur is None or conv.updated_at > cur[0]:
+                    last_seen[pid] = (conv.updated_at, conv.preview)
     out: list[dict] = []
     for char in book().list(include_hidden=include_hidden):
         view = char.model_dump()
@@ -1242,6 +1249,7 @@ def _char_views(db, include_hidden: bool = False) -> list[dict]:
         view["avatar_source"] = book().avatar_source_url(char)
         view["conversation_count"] = counts.get(char.id, 0)
         view["unread_count"] = unread.get(char.id, 0)
+        view["last_preview"] = last_seen.get(char.id, (0, ""))[1]
         out.append(view)
     return out
 
