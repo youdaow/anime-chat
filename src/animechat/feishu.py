@@ -46,6 +46,10 @@ FEISHU_BASE = "https://open.feishu.cn/open-apis"
 BIND_PREFIX = "feishu.bind."          # prefs: feishu.bind.<chat_id> -> character_id
 MODE_PREFIX = "feishu.mode."          # prefs: feishu.mode.<chat_id> -> on / off
 CONV_PREFIX = "feishu.conv."          # prefs: feishu.conv.<chat_id> -> conversation id
+GROUP_PREFIX = "feishu.group."        # prefs: feishu.group.<chat_id> -> "id,id,..." 群成员
+GROUP_TURN_GAP = 1.2                  # 群聊轮转每条之间的停顿（秒）：模拟打字、给读留时间
+GROUP_AUTO_DEFAULT = 4                # 「/群聊 自己聊」默认轮数
+GROUP_AUTO_MAX = 20                   # 上限，防手滑打个大数刷爆 token
 
 
 # --------------------------------------------------------------- 入站：抽正文
@@ -236,6 +240,8 @@ HELP_TEXT = (
     "这里是本机的 animechat，用法：\n"
     "· 直接说话，我用当前角色回你\n"
     "· /角色 看有哪些人；/角色 名字 换人\n"
+    "· /群聊 名字 名字 拉两个以上角色建群，她们你一句我一句\n"
+    "· /群聊 自己聊 让她们自己聊几轮；/群聊 停 打断；/群聊 退 散会\n"
     "· /表情 on|off 要不要真发图\n"
     "· /主动 on|off 我沉默久了会不会主动找你（仅私聊）\n"
     "· /清空 重开一段对话（网页记录不动）\n"
@@ -249,6 +255,7 @@ COMMAND_ALIASES = {
     "换": "character", "人设": "character",
     "表情": "sticker", "sticker": "sticker", "stickers": "sticker",
     "主动": "proactive", "找": "proactive", "proactive": "proactive",
+    "群聊": "group", "群": "group", "拉群": "group", "group": "group",
     "清空": "reset", "reset": "reset", "new": "reset", "重开": "reset",
     "帮助": "help", "help": "help", "？": "help", "?": "help",
     "状态": "status", "status": "status",
@@ -363,7 +370,8 @@ def card_pick(data: Any) -> tuple[str, str, str]:
 class ChatResult:
     """一次 /api/chat 的结果。"""
 
-    __slots__ = ("text", "stickers", "emotion", "error", "stopped", "mock", "message_id")
+    __slots__ = ("text", "stickers", "emotion", "error", "stopped", "mock", "message_id",
+                 "character_id")
 
     def __init__(self) -> None:
         self.text = ""
@@ -373,6 +381,7 @@ class ChatResult:
         self.stopped = False
         self.mock = False
         self.message_id = 0
+        self.character_id = ""
 
     @property
     def ok(self) -> bool:
@@ -388,6 +397,9 @@ def feed_sse(event: str, data: dict, out: ChatResult) -> None:
     if event == "start":
         out.message_id = int(data.get("message_id") or 0)
         out.mock = bool(data.get("mock"))
+        # 群聊要靠这个给每条气泡署名【谁说的】：本轮实际开口的人由后端轮转决定，
+        # 桥接不自己维护顺序，就以回传的 character_id 为准。
+        out.character_id = str(data.get("character_id") or "")
     elif event == "text":
         out.text += str(data.get("t") or "")
     elif event == "sticker":
@@ -486,6 +498,44 @@ def bound_character(db: Any, chat_id: str, default_id: str) -> str:
     if cid:
         return cid
     return (default_id or "").strip() or db.get_pref("last_character", "")
+
+
+def group_key(chat_id: str) -> str:
+    return GROUP_PREFIX + str(chat_id or "")
+
+
+def group_members(db: Any, chat_id: str) -> list[str]:
+    """这个飞书会话当前的群成员 id 列表。空 = 没开群聊，走普通单聊。"""
+    raw = db.get_pref(group_key(chat_id), "")
+    return [p for p in dict.fromkeys(x.strip() for x in raw.split(",")) if p]
+
+
+def set_group(db: Any, chat_id: str, ids: list[str]) -> None:
+    db.set_pref(group_key(chat_id), ",".join(dict.fromkeys(i for i in ids if i)))
+
+
+def clear_group(db: Any, chat_id: str) -> None:
+    db.set_pref(group_key(chat_id), "")
+
+
+def match_characters(arg: str, chars: Iterable[Any]) -> tuple[list[Any], list[str]]:
+    """把「丛雨 祥子 爱音」这种一串名字拆成角色对象。分隔符容忍空格 / 顿号 / 逗号。
+
+    逐个走 match_character（精确 > 唯一包含）。返回 (命中列表, 没认出的原始词)。
+    没认出的原样回给用户，别默默丢掉让人以为机器人漏听了。
+    """
+    pool = list(chars)
+    tokens = [t for t in re.split(r"[\s,，、]+", (arg or "").strip()) if t]
+    found: list[Any] = []
+    missing: list[str] = []
+    for tok in tokens:
+        char, _ambiguous = match_character(tok, pool)
+        if char is not None:
+            if not any(c is char or getattr(c, "id", "") == getattr(char, "id", "") for c in found):
+                found.append(char)
+        else:
+            missing.append(tok)
+    return found, missing
 
 
 def list_bindings(db: Any) -> dict[str, str]:
@@ -881,6 +931,9 @@ class Bridge:
         # 会话级锁只在同一个 loop 里用（全部 handler 都 submit 到 worker 的 loop），
         # 所以这里用普通 dict 存 asyncio.Lock 是安全的。
         self._locks: dict[str, asyncio.Lock] = {}
+        # 群聊自动轮转跑到一半，用户发 /群聊 停 时置位。同一个 worker loop 里读写，
+        # 不需要锁；长循环每轮开头查一次，能立刻收住。
+        self._group_stop: set[str] = set()
         self.proactive_task: Optional[asyncio.Future] = None
 
     # -- SDK 回调入口：必须立刻返回
@@ -957,6 +1010,14 @@ class Bridge:
             if not text:
                 return
 
+            # 群聊模式：这个 chat_id 绑了两个以上角色。用户发的每一句，让群里的角色
+            # 按轮转各接一句（像真群里 @ 一下好几个人都来回你）。单聊路径完全不走这里。
+            members = group_members(db, chat_id)
+            if len(members) >= 2:
+                await self._group_reply(s, members, text, chat_id, mid, db)
+                self.state.processed += 1
+                return
+
             cid = bound_character(db, chat_id, s.feishu_character)
             char = book().get(cid) if cid else None
             if char is None:
@@ -1019,6 +1080,8 @@ class Bridge:
 
         if proactive_target(db, chat_id) != "p2p":
             return                                   # 群聊 / 没聊过的，一律不主动
+        if len(group_members(db, chat_id)) >= 2:
+            return                                   # 模拟群聊模式：用户主动开的，别插话催
         if not proactive_enabled(db, chat_id, s):
             return
         idle_min = int(getattr(s, "feishu_idle_min", 120) or 120)
@@ -1051,16 +1114,29 @@ class Bridge:
     # --------------------------------------------------------- 调本机聊天接口
     async def _chat(self, s: Any, char: Any, text: str, chat_id: str,
                     chat_type: str, db: Any, proactive: bool = False,
-                    idle: str = ""):
+                    idle: str = "", auto: bool = False, participants=None):
         import httpx
 
-        conv_id = self._conversation(db, char, chat_id, chat_type)
+        conv_id = self._conversation(db, char, chat_id, chat_type, participants)
         if proactive:
             # 主动开口：不带 content（否则服务端会当成用户发言写进历史），
             # 走 ChatReq.proactive 那条口子。
             payload = {"conversation_id": conv_id, "proactive": True, "idle_note": idle}
+        elif auto:
+            # 群聊接话：本轮没有用户发言。谁开口交给后端 next_speaker 轮转，桥接不
+            # 自己排顺序（两处各排一遍迟早打架）。char 只是命中缓存会话的锚点。
+            payload = {"conversation_id": conv_id, "auto": True}
         else:
             payload = {"conversation_id": conv_id, "content": text}
+        return await self._api_chat(s, payload)
+
+    async def _api_chat(self, s: Any, payload: dict) -> ChatResult:
+        """POST /api/chat 并攒完 SSE。单聊、主动、群聊轮转都走这一条。
+
+        抽出来是因为群聊一次要连发好几轮 auto，payload 各不相同但传输逻辑完全一样。
+        """
+        import httpx
+
         out = ChatResult()
         try:
             timeout = httpx.Timeout(max(30.0, float(s.llm_timeout) + 30), connect=10)
@@ -1090,11 +1166,198 @@ class Bridge:
                 "先确认那个地址上跑的确实是 animechat；没开着就跑 `animechat run`，"
                 "跨机部署要在设置里填「桥接回调地址」。")
 
-    def _conversation(self, db: Any, char: Any, chat_id: str, chat_type: str) -> int:
+    async def _api_json(self, s: Any, method: str, path: str, payload: dict | None = None) -> Any:
+        """非流式的本机 API 调用（建群用）。出错统一回一个带 _error 的 dict，
+        调用方只看有没有 _error，不必到处 try/except。"""
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10)) as c:
+                r = await c.request(method, self.state.api_base + path, json=payload)
+                if r.status_code >= 400:
+                    return {"_error": f"{r.status_code} " + r.text[:200]}
+                return r.json()
+        except httpx.HTTPError as exc:
+            return {"_error": str(exc)[:160]}
+
+    def _group_prefix(self, result: ChatResult) -> str:
+        """群聊每条气泡的署名【谁说的】。说话人由后端轮转决定，以 SSE 回传的
+        character_id 为准反查名字 —— 桥接不自己排顺序，两处各排迟早对不上。"""
+        cid = getattr(result, "character_id", "")
+        if not cid:
+            return ""
+        from .characters import book
+
+        char = book().get(cid)
+        return ("【" + str(getattr(char, "name", "")) + "】") if char else ""
+
+    def _group_conv_id(self, db: Any, ids: list[str], chat_id: str) -> int:
+        """群聊会话 id。建群时已写入 conv_key，正常直接命中；万一被人从网页删了，
+        按成员名单重建（participants 传全，别退化成单聊，否则 auto 会被判 400）。"""
+        from .characters import book
+
+        anchor = book().get(ids[0]) or next((book().get(i) for i in ids if book().get(i)), None)
+        if anchor is None:
+            raise LookupError("群成员全没了")
+        return self._conversation(db, anchor, chat_id, "p2p", ids)
+
+    async def _group_reply(self, s: Any, ids: list[str], text: str,
+                           chat_id: str, mid: str, db: Any) -> None:
+        """用户说一句，群里每个角色按轮转各接一句（像真群里 @ 一下好几个人都回你）。
+
+        第一句带上用户发言（后端 next_speaker 挑人回），其余 len-1 句走 auto 接话，
+        合起来正好每人一句。全程持会话锁，避免和别的消息交错写库。"""
+        lock = self._locks.setdefault(chat_id, asyncio.Lock())
+        if lock.locked():
+            await self._send("（上一条还在想，这条稍等）", chat_id, "")
+        self._group_stop.discard(chat_id)
+        async with lock:
+            conv_id = self._group_conv_id(db, ids, chat_id)
+            r = await self._api_chat(s, {"conversation_id": conv_id, "content": text})
+            await self._deliver(r, chat_id, mid, s, db, prefix=self._group_prefix(r))
+            for _ in range(len(ids) - 1):
+                if chat_id in self._group_stop:
+                    break
+                await asyncio.sleep(GROUP_TURN_GAP)
+                r = await self._api_chat(s, {"conversation_id": conv_id, "auto": True})
+                await self._deliver(r, chat_id, "", s, db, prefix=self._group_prefix(r))
+
+    async def _group_auto(self, s: Any, ids: list[str], chat_id: str, rounds: int,
+                          db: Any) -> None:
+        """让群里的角色自己聊 rounds 轮，用户纯看戏。/群聊 停 可中途打断。"""
+        lock = self._locks.setdefault(chat_id, asyncio.Lock())
+        if lock.locked():
+            await self._send("（上一条还在想，稍等一下再让她们自己聊）", chat_id, "")
+        self._group_stop.discard(chat_id)
+        sent = 0
+        async with lock:
+            conv_id = self._group_conv_id(db, ids, chat_id)
+            for _ in range(max(1, rounds)):
+                if chat_id in self._group_stop:
+                    break
+                r = await self._api_chat(s, {"conversation_id": conv_id, "auto": True})
+                if r.error:
+                    await self._deliver(r, chat_id, "", s, db)
+                    break
+                await self._deliver(r, chat_id, "", s, db, prefix=self._group_prefix(r))
+                sent += 1
+                await asyncio.sleep(GROUP_TURN_GAP)
+        if chat_id in self._group_stop:
+            self._group_stop.discard(chat_id)
+            await self._send("（停）", chat_id, "")
+        else:
+            await self._send("（聊完 " + str(sent) + " 句。`/群聊 自己聊` 再来一段，`/群聊 退` 散会）",
+                             chat_id, "")
+
+    async def _group_create(self, s: Any, found: list[Any], chat_id: str,
+                            mid: str, db: Any) -> None:
+        """建群：走后端 POST /api/conversations（白捡「每个成员各自打招呼」那套），
+        再把后端写进库的招呼转发到飞书。招呼也走 _deliver，所以署名 + 表情包和
+        接话完全同一套逻辑，不会建群时反而丢图。"""
+        from .characters import book
+        from .stickers import library
+
+        ids = [c.id for c in found]
+        title = ("飞书群 · " + "、".join(str(getattr(c, "name", "")) for c in found))[:60]
+        resp = await self._api_json(s, "POST", "/api/conversations",
+                                    {"character_id": ids[0], "participants": ids, "title": title})
+        if not isinstance(resp, dict) or "conversation" not in resp:
+            err = resp.get("_error") if isinstance(resp, dict) else str(resp)
+            await self._send("建群失败：" + str(err)[:120], chat_id, mid)
+            return
+        conv_id = int(resp["conversation"]["id"])
+        db.set_pref(conv_key(chat_id), str(conv_id))
+        set_group(db, chat_id, ids)
+        names = "、".join(str(getattr(c, "name", "")) for c in found)
+        await self._send("拉了个群：" + names + "。你说一句她们各接一句；"
+                         "`/群聊 自己聊` 让她们自己聊，`/群聊 退` 散会。", chat_id, mid)
+        lib = library()
+        for m in db.messages(conv_id):
+            if m.role != "assistant" or not (m.meta or {}).get("greeting"):
+                continue
+            who = book().get(m.speaker)
+            tag = ("【" + str(getattr(who, "name", "")) + "】") if who else ""
+            # 库里存的是 sticker id（["p02"]），_deliver 要的是带 url 的 dict 才能上传，
+            # 这里补一次解析；解析不到的（比如远程图）跳过，只发文字。
+            r = ChatResult()
+            r.text = (m.content or "").strip()
+            r.stickers = [{"id": sid, "url": getattr(lib.get(sid), "url", "")}
+                          for sid in (m.stickers or []) if lib.get(sid)]
+            if r.text or r.stickers:
+                await self._deliver(r, chat_id, "", s, db, prefix=tag)
+
+    async def _cmd_group(self, arg: str, chat_id: str, mid: str,
+                         db: Any, chars: Any, s: Any) -> None:
+        """/群聊 命令：建群 / 自己聊 N 轮 / 停 / 退 / 看当前群。"""
+        a = (arg or "").strip()
+        members = group_members(db, chat_id)
+        if not a:
+            if len(members) >= 2:
+                from .characters import book
+
+                names = "、".join(str(getattr(book().get(i), "name", "?")) for i in members)
+                await self._send("现在是群聊：" + names +
+                                 "。\n你说一句她们各接一句；`/群聊 自己聊` 让她们自己聊；"
+                                 "`/群聊 名字 名字…` 换一批人；`/群聊 退` 散会。", chat_id, mid)
+            else:
+                await self._send("还没开群聊。`/群聊 丛雨 祥子` 拉两个以上角色建群。"
+                                 "`/角色` 看有哪些人。", chat_id, mid)
+            return
+        if a in ("停", "别聊了", "stop", "停聊"):
+            if chat_id in self._group_stop:
+                await self._send("已经停了。", chat_id, mid)
+            else:
+                self._group_stop.add(chat_id)
+                await self._send("好，让她们停下。", chat_id, mid)
+            return
+        if a in ("退", "散会", "退出", "quit", "出"):
+            if len(members) < 2:
+                await self._send("现在本来就是单聊。", chat_id, mid)
+                return
+            clear_group(db, chat_id)
+            db.set_pref(conv_key(chat_id), "")
+            await self._send("散会了，回到单聊。`/角色 名字` 找一个人单独聊。", chat_id, mid)
+            return
+        # 「自己聊」或「自己聊 6」或纯数字 → 自动轮转
+        auto_rounds = None
+        if a == "自己聊" or a.startswith("自己聊"):
+            tail = a[len("自己聊"):].strip()
+            auto_rounds = int(tail) if tail.isdigit() else GROUP_AUTO_DEFAULT
+        elif a.isdigit():
+            auto_rounds = int(a)
+        if auto_rounds is not None:
+            if len(members) < 2:
+                await self._send("先建群才能让她们自己聊：`/群聊 丛雨 祥子`。", chat_id, mid)
+                return
+            from .characters import book
+
+            ids = [i for i in members if book().get(i)]
+            if len(ids) < 2:
+                await self._send("群里的角色本机删得只剩一个了，重新 `/群聊 名字 名字` 拉一个。",
+                                 chat_id, mid)
+                return
+            await self._group_auto(s, ids, chat_id, min(GROUP_AUTO_MAX, max(1, auto_rounds)), db)
+            return
+        # 否则当作「拉人建群」
+        found, missing = match_characters(a, chars)
+        if len(found) < 2:
+            hint = "至少要两个角色才能建群"
+            if found:
+                hint += "（只认出：" + "、".join(str(getattr(c, "name", "")) for c in found) + "）"
+            if missing:
+                hint += "，没认出的：" + "、".join(missing)
+            await self._send(hint + "。`/角色` 看清单。", chat_id, mid)
+            return
+        await self._group_create(s, found, chat_id, mid, db)
+
+    def _conversation(self, db: Any, char: Any, chat_id: str, chat_type: str,
+                      participants=None) -> int:
         """一个飞书会话 ↔ 一个本地会话。私聊按 chat_id，群聊整个群共用一条。
 
         缓存的会话可能已被人从网页删掉，也可能角色对不上（换了绑定），所以每次
         都验证一遍再复用，不信任存进去的那个 id。
+        participants 给两个以上 = 群聊：缓存丢了重建时要按这份名单建，别退化成
+        单聊（否则 auto 接话会被后端判「不是群聊」直接 400）。
         """
         key = conv_key(chat_id)
         cached = db.get_pref(key, "")
@@ -1102,8 +1365,9 @@ class Bridge:
             conv = db.get_conversation(int(cached))
             if conv is not None and char.id in (conv.participants or [conv.character_id]):
                 return conv.id
+        parts = [p for p in (participants or []) if p] or [char.id]
         title = (("飞书群 · " if chat_type == "group" else "飞书 · ") + char.name)[:60]
-        conv = db.create_conversation(char.id, title, participants=[char.id])
+        conv = db.create_conversation(char.id, title, participants=parts)
         db.set_pref(key, str(conv.id))
         return conv.id
 
@@ -1161,6 +1425,9 @@ class Bridge:
                                  chat_id, mid)
             else:
                 await self._send("本机没有叫「" + arg + "」的角色。`/角色` 看清单。", chat_id, mid)
+            return
+        if cmd == "group":
+            await self._cmd_group(arg, chat_id, mid, db, chars, s)
             return
         if cmd == "sticker":
             want = sticker_mode_text(arg)
@@ -1288,7 +1555,7 @@ class Bridge:
 
     # --------------------------------------------------------- 投递
     async def _deliver(self, result: ChatResult, chat_id: str, mid: str,
-                       s: Any, db: Any) -> None:
+                       s: Any, db: Any, prefix: str = "") -> None:
         if result.error and not result.text:
             await self._send("生成失败了：" + result.error, chat_id, mid)
             return
@@ -1306,8 +1573,10 @@ class Bridge:
 
         first = True
         for chunk in chunks:
+            # 群聊署名只贴第一条正文；分条是同一句话被长度切断，不该重复【谁说的】。
+            body = (prefix + chunk) if (first and prefix) else chunk
             # 第一条挂在用户那条消息下（回复），后面的直接发 —— 全 reply 会套成一串
-            await self._send(chunk, chat_id, mid if first else "")
+            await self._send(body, chat_id, mid if first else "")
             first = False
         for key in images:
             await self._send_image(key, chat_id, mid if first else "")

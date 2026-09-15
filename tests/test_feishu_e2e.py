@@ -150,6 +150,106 @@ def _seed_character():
     return char
 
 
+def _seed_group_characters():
+    """两个能分名的角色，群聊用例专用。greeting 不同，才看得出招呼是不是各发各的。"""
+    from animechat.models import Character
+
+    a = Character(id="ga", name="甲酱", greeting="甲酱报到。",
+                  speaking_style="短句。", sticker_style="off")
+    b = Character(id="gb", name="乙酱", greeting="乙酱在此。",
+                  speaking_style="短句。", sticker_style="off")
+    book().save(a)
+    book().save(b)
+    save_settings({"feishu_character": "ga"})
+    return [a, b]
+
+
+def test_group_command_builds_group_and_sends_each_greeting(monkeypatch):
+    """`/群聊 甲酱 乙酱`：建一个多角色会话，并把后端写进库的招呼逐条转发到飞书。"""
+    monkeypatch.setattr(feishu, "GROUP_TURN_GAP", 0.01)
+    with _Server() as server:
+        _seed_group_characters()
+        sink = []
+        bridge, s = _bridge(server, sink)
+        m, sd = _event("/群聊 甲酱 乙酱")
+        asyncio.run(bridge._process(m, sd, "oc_g1", "om_1"))
+
+        db = store()
+        assert feishu.group_members(db, "oc_g1") == ["ga", "gb"], "群成员没存进去"
+        conv_id = int(db.get_pref(feishu.conv_key("oc_g1"), "0"))
+        conv = db.get_conversation(conv_id)
+        assert conv is not None and len(conv.participants) == 2, "没建成两人会话"
+
+        texts = [t for _, t, _ in _sent(sink)]
+        joined = "".join(texts)
+        assert "甲酱报到" in joined and "乙酱在此" in joined, texts
+        # 署名：招呼也得标清是谁说的，否则飞书里两条气泡分不清人
+        assert any(t.startswith("【甲酱】") for _, t, _ in _sent(sink)), texts
+        assert any(t.startswith("【乙酱】") for _, t, _ in _sent(sink)), texts
+
+
+def test_group_user_message_makes_every_member_reply_with_name(monkeypatch):
+    """开了群之后用户说一句：两个角色各接一句，都带【署名】，且都进同一条会话。"""
+    monkeypatch.setattr(feishu, "GROUP_TURN_GAP", 0.01)
+    with _Server() as server:
+        _seed_group_characters()
+        sink = []
+        bridge, s = _bridge(server, sink)
+        m, sd = _event("/群聊 甲酱 乙酱")
+        asyncio.run(bridge._process(m, sd, "oc_g2", "om_1"))
+
+        sink.clear()
+        m2, sd2 = _event("你们俩聊点什么好呢")
+        asyncio.run(bridge._process(m2, sd2, "oc_g2", "om_2"))
+
+        _assert_real_reply(sink)
+        texts = [t for _, t, _ in _sent(sink)]
+        speakers = {t[:4] for t in texts if t.startswith("【")}
+        assert "【甲酱】" in speakers and "【乙酱】" in speakers, texts
+
+        db = store()
+        conv_id = int(db.get_pref(feishu.conv_key("oc_g2"), "0"))
+        rows = db.messages(conv_id)
+        assert any(x.role == "user" and "你们俩聊点什么好呢" in x.content for x in rows), "用户那句没入库"
+        spk = {x.speaker for x in rows if x.role == "assistant" and x.content}
+        assert {"ga", "gb"} <= spk, f"两个角色没都接过话：{spk}"
+
+
+def test_group_quit_falls_back_to_single_chat(monkeypatch):
+    """`/群聊 退` 之后回到单聊：再发消息只有一个角色回，不再署名。"""
+    monkeypatch.setattr(feishu, "GROUP_TURN_GAP", 0.01)
+    with _Server() as server:
+        _seed_group_characters()
+        sink = []
+        bridge, s = _bridge(server, sink)
+        m, sd = _event("/群聊 甲酱 乙酱")
+        asyncio.run(bridge._process(m, sd, "oc_g3", "om_1"))
+        sink.clear()
+        m2, sd2 = _event("/群聊 退")
+        asyncio.run(bridge._process(m2, sd2, "oc_g3", "om_2"))
+        assert "散会" in "".join(t for _, t, _ in _sent(sink))
+        assert feishu.group_members(store(), "oc_g3") == []
+
+        sink.clear()
+        m3, sd3 = _event("现在只剩你一个了吧")
+        asyncio.run(bridge._process(m3, sd3, "oc_g3", "om_3"))
+        _assert_real_reply(sink)
+        assert not any(t.startswith("【") for _, t, _ in _sent(sink)), "退回单聊还署名，多余"
+
+
+def test_group_needs_two_recognized_characters():
+    """只认出一个角色时不建群，并说清楚只认出谁。"""
+    with _Server() as server:
+        _seed_group_characters()
+        sink = []
+        bridge, s = _bridge(server, sink)
+        m, sd = _event("/群聊 甲酱 查无此人")
+        asyncio.run(bridge._process(m, sd, "oc_g4", "om_1"))
+        joined = "".join(t for _, t, _ in _sent(sink))
+        assert "至少要两个" in joined and "查无此人" in joined, joined
+        assert feishu.group_members(store(), "oc_g4") == [], "不该被建成群"
+
+
 def test_sticker_images_actually_get_uploaded_and_sent():
     """表情图那条链路：sticker dict → 上传 im/v1/images → 发一条 msg_type=img。
 

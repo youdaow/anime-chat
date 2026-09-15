@@ -475,3 +475,33 @@ def test_module_does_not_import_lark_at_top_level():
              if re.match(r"^(import|from)\s", ln) and not ln.startswith("from .")]
     assert not any("lark" in ln for ln in lines), lines
 
+
+# ---------------------------------------------------------------- 群聊（纯逻辑）
+def test_group_members_roundtrip_and_dedupe():
+    db = Store()
+    assert feishu.group_members(db, "oc_x") == []          # 没开群 = 空
+    feishu.set_group(db, "oc_x", ["a", "b", "a"])          # 重复自动去重、保序
+    assert feishu.group_members(db, "oc_x") == ["a", "b"]
+    feishu.clear_group(db, "oc_x")
+    assert feishu.group_members(db, "oc_x") == []
+
+
+def test_match_characters_splits_names_and_reports_missing():
+    from animechat.characters import book
+
+    for cid, name in [("a", "丛雨"), ("b", "丰川祥子"), ("c", "千早爱音")]:
+        book().save(Character(id=cid, name=name, greeting="嗨"))
+    chars = book().list()
+    found, missing = feishu.match_characters("丛雨 祥子 不存在的人", chars)
+    assert [c.name for c in found] == ["丛雨", "丰川祥子"], found
+    assert missing == ["不存在的人"], missing          # 没认出的原样回给用户，别默默丢
+    # 顿号 / 逗号分隔也认，重复只算一个
+    assert len(feishu.match_characters("丛雨、爱音", chars)[0]) == 2
+    assert len(feishu.match_characters("丛雨 丛雨", chars)[0]) == 1
+
+
+def test_group_command_aliases():
+    assert feishu.canonical_command("群聊") == "group"
+    assert feishu.canonical_command("群") == "group"
+    assert feishu.canonical_command("group") == "group"
+
