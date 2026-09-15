@@ -46,11 +46,79 @@ const ctx = {
   openStickerLibrary,
 };
 
+/* ------------------------------------------------------- 窄屏 / 键盘适配 */
+
+/* 侧栏在 ≤900px 变成覆盖式抽屉（见 style.css 那条媒体查询）。判断一律走
+   matchMedia，别读 offsetWidth：抽屉收起时侧栏仍在 DOM 里，量出来的宽度会骗人。 */
+const narrowMq = window.matchMedia ? window.matchMedia("(max-width: 900px)") : null;
+function isNarrow() { return !!(narrowMq && narrowMq.matches); }
+
+function isChatOpen() { return document.getElementById("app").classList.contains("show-chat"); }
+
+/* 切到聊天视图：窄屏下聊天区从右侧滑入盖住列表。只管类名，滑动交给 CSS transition。
+   宽屏两栏并排，这个类没有视觉作用，加着也无害。 */
+function showChat() { document.getElementById("app").classList.add("show-chat"); }
+
+/* 退回列表：聊天区滑回右侧屏外。← 返回键和 Esc 都走它。 */
+function hideChat() { document.getElementById("app").classList.remove("show-chat"); }
+
+/* 输入框提示语：手机上「Enter 发送 / Shift+Enter 换行」既打不出来、又把真正有用的
+   提示挤到看不见（实测 390px 上「Shift+Enter 换行」被截成半行）。触屏上换行靠
+   键盘的回车、发送靠「发送」按钮，所以提示要说人话。 */
+const INPUT_HINT_WIDE = "说点什么…（Enter 发送 / Shift+Enter 换行）";
+const INPUT_HINT_NARROW = "说点什么…（点「发送」发出）";
+
+function paintInputHint() {
+  const input = qs("input");
+  if (!input) return;
+  input.placeholder = isNarrow() ? INPUT_HINT_NARROW : INPUT_HINT_WIDE;
+}
+
+function initNarrowNav() {
+  const back = qs("btn-back");
+  if (back) back.addEventListener("click", () => hideChat());
+  if (narrowMq) {
+    // 转屏 / 拖回宽屏：宽屏是并排双栏，聊天态残留没意义，退回列表；提示语跟着换
+    const onBreak = (ev) => { if (!ev.matches) hideChat(); paintInputHint(); };
+    if (narrowMq.addEventListener) narrowMq.addEventListener("change", onBreak);
+    else if (narrowMq.addListener) narrowMq.addListener(onBreak);
+  }
+}
+
+/* iOS Safari 的软键盘只压缩 visualViewport，#app 那 100dvh 一动不动，于是
+   输入框连刚打的字一起被键盘埋掉（发消息全程摸黑）。这里把「布局视口 −
+   可视视口」写进 --kb，样式从 #app 高度里扣掉它，输入区就被顶到键盘正上方。
+   Android 的键盘压缩的是布局视口本身，差值算出来是 0，不会重复补偿。 */
+function initKeyboardInset() {
+  const vv = window.visualViewport;
+  const app = document.getElementById("app");
+  if (!vv || !app || !app.style) return;
+  let raf = 0;
+  const apply = () => {
+    raf = 0;
+    // innerHeight 在 iOS 上始终是不被键盘影响的布局高度
+    const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+    // 变量挂到 :root 而不是 #app：弹窗的 .modal-root 是 #app 的兄弟节点，
+    // 挂 #app 上它继承不到，键盘照样埋掉抽屉底部的「保存」。
+    const root = document.documentElement;
+    if (root.style) root.style.setProperty("--kb", kb + "px");
+    app.style.setProperty("--kb", kb + "px");
+    app.classList.toggle("kb-up", kb > 0);
+  };
+  const schedule = () => { if (!raf) raf = window.requestAnimationFrame(apply); };
+  vv.addEventListener("resize", schedule);
+  vv.addEventListener("scroll", schedule);
+  apply();
+}
+
 /* ---------------------------------------------------------------- 启动 */
 
 async function boot() {
   initTheme();
   bindStatic();
+  initNarrowNav();
+  initKeyboardInset();
+  paintInputHint();
   try {
     await loadBootstrap();
   } catch (err) {
@@ -72,7 +140,7 @@ async function boot() {
     toast("还没有角色，左侧「＋新建」或导入一张角色卡", "err");
     return;
   }
-  selectCharacter(target.id, { openLatest: true });
+  selectCharacter(target.id, { openLatest: !isNarrow() });   // 窄屏先停在会话列表，点进去才滑入聊天
 }
 
 async function loadBootstrap() {
@@ -118,11 +186,11 @@ function convUnread(conv) { return Number(conv && conv.unread_count) || 0; }
 
 function fmtUnread(n) {
   const v = Number(n) || 0;
-  return v > 99 ? "99+" : String(v);   // 手机窄栏只有 74px，四位数会把头像挤歪
+  return v > 99 ? "99+" : String(v);   // 四位数会把行尾挤歪，手机上看也更像故障
 }
 
 /* 某个角色名下的未读总数。群聊摊到每个成员头上，和后端 _char_views 同一套算法：
-   窄屏（平板 / 手机）只剩角色头像条，靠的就是这个数字提示你有没看的回复。 */
+   手机上侧栏是抽屉、要点开才看得见，这个数字就是「谁有新回复」的唯一线索。 */
 function charUnread(cid) {
   let n = 0;
   for (const c of state.conversations) {
@@ -161,7 +229,9 @@ function renderSidebar() {
       avatarNode(char),
       el("div", { class: "char-meta" }, [
         el("b", { text: char.name }),
-        el("span", { text: char.title || char.short_desc || "自定义角色" }),
+        // 副标题显示「上次聊了什么」而不是角色介绍：列表一眼能回忆起对话进度。
+        // 没聊过的新角色留一句提示，不拿介绍去填。
+        el("span", { text: char.last_preview || "还没有聊过" }),
       ]),
       // 有未读就换成红色气泡显示条数，没有才显示灰色的会话数：一块地方，
       // 优先说「有新东西」，其次才是「一共有几个会话」。
@@ -263,6 +333,7 @@ function nextSpeakerId() {
 function selectCharacter(cid, opts) {
   const options = opts || {};
   state.charId = cid;
+  // 滑入聊天交给 openConversation：那里才是真的有了会话内容   // 抽屉里挑完人就收起来，别让人再点一次遮罩
   renderSidebar();
   renderHead();
   if (options.openLatest) {
@@ -303,11 +374,14 @@ async function openConversation(id) {
     /* 会话画到屏幕上才算读到。标签页在后台时不清水位：切到后台那一刻到货的回复，
        正是红点要提示的东西，回到前台由 visibilitychange 补这次清零。 */
     if (document.visibilityState === "visible") markRead(id);
+    if (isNarrow()) showChat();
     renderSidebar();
     renderHead();
     renderThread();
     qs("composer").hidden = false;
-    qs("input").focus({ preventScroll: true });
+    /* 窄屏别抢焦点：一聚焦就弹软键盘，键盘把刚打开的历史整个遮住，
+       用户进来只看到一片空白。要打字他自己会点输入框。 */
+    if (!isNarrow()) qs("input").focus({ preventScroll: true });
   } catch (err) {
     toast(err.message, "err");
   }
@@ -351,14 +425,11 @@ function renderHead() {
     title.textContent = group ? (chars.length + " 个人 · 轮流发言，也可以你插一句") : (char.title || "");
   }
   title.classList.toggle("typing", typing);
+  // 顶部只留群聊的成员名。单聊不再铺任何角色标签（tags、表情使用频率都撤了）：
+  // 那些是设定信息，聊天时用不上还占一行。
   const chips = clear(qs("head-chips"));
   if (group) {
     for (const c of chars) chips.appendChild(el("span", { class: "chip", text: c.name }));
-  } else {
-    for (const tag of (char.tags || []).slice(0, 4)) chips.appendChild(el("span", { class: "chip", text: tag }));
-    const stickerMode = char.sticker_style === "off" ? "这个角色不发图"
-      : char.sticker_style === "rich" ? "重度表情党" : "偶尔甩图";
-    chips.appendChild(el("span", { class: "chip", text: "表情：" + stickerMode }));
   }
   if (state.settings && state.settings.mock_mode) {
     chips.appendChild(el("span", { class: "chip mock", text: "Mock 假模型" }));
@@ -992,7 +1063,12 @@ function togglePicker(force) {
   picker.hidden = !want;
   if (want) {
     renderPicker();
-    qs("picker-q").focus({ preventScroll: true });
+    if (isNarrow()) {
+      // 面板在文档流里挤在输入区上方，不滚一下可能整块还在屏幕外
+      if (picker.scrollIntoView) picker.scrollIntoView({ block: "end", behavior: "smooth" });
+    } else {
+      qs("picker-q").focus({ preventScroll: true });
+    }
   }
 }
 
@@ -1217,6 +1293,30 @@ function openCharMenu(char) {
   openModal(el("div", {}, [titleBar(char.name, char.builtin ? "内置" : "自定义"), el("p", { class: "sub", text: char.title || "" }), rows]));
 }
 
+async function compactNow() {
+  if (!state.convId) { toast("还没有会话可总结"); return; }
+  toast("正在总结…");
+  try {
+    const data = await api("/api/conversations/" + state.convId + "/compact", { method: "POST" });
+    toast(data.note || "记忆已更新（" + (data.summary || "").length + " 字）");
+  } catch (err) { toast(err.message, "err"); }
+}
+
+/* 窄屏头部放不下「上下文 / 总结记忆 / 删除」三个文字按钮（360px 会横向溢出），
+   收成一个 ⋯。三件事和原来一模一样，只是换了个入口，所以直接复用现有处理函数。 */
+function openHeadMenu() {
+  const rows = el("div", { class: "row-actions", style: "flex-direction:column;align-items:stretch" });
+  const mk = (label, hint, fn, cls) => rows.appendChild(el("button", {
+    class: cls || "plain", text: label, title: hint, onclick: () => { closeModal(); fn(); },
+  }));
+  mk("看本次发给模型的内容", "上下文", () => { if (state.convId) openContext(state.convId, ctx); });
+  mk("把较早的对话压缩成角色记忆", "总结记忆", compactNow);
+  mk("删除当前会话", "删除", () => {
+    if (state.convId) openConvMenu(state.conversation || { id: state.convId });
+  }, "danger");
+  openModal(el("div", {}, [titleBar("会话操作", charName(state.charId) || ""), rows]));
+}
+
 async function openConvMenu(conv) {
   const rows = el("div", { class: "row-actions", style: "flex-direction:column;align-items:stretch" });
   const mk = (label, fn, cls) => rows.appendChild(el("button", { class: cls || "plain", text: label, onclick: () => { closeModal(); fn(); } }));
@@ -1287,14 +1387,8 @@ function bindStatic() {
   qs("head-avatar").addEventListener("click", () => { if (currentChar()) openCharEditor(currentChar(), ctx); });
   qs("btn-context").addEventListener("click", () => { if (state.convId) openContext(state.convId, ctx); });
   qs("btn-del-conv").addEventListener("click", () => { if (state.convId) openConvMenu(state.conversation || { id: state.convId }); });
-  qs("btn-compact").addEventListener("click", async () => {
-    if (!state.convId) return;
-    toast("正在总结…");
-    try {
-      const data = await api("/api/conversations/" + state.convId + "/compact", { method: "POST" });
-      toast(data.note || "记忆已更新（" + (data.summary || "").length + " 字）");
-    } catch (err) { toast(err.message, "err"); }
-  });
+  qs("btn-head-menu").addEventListener("click", openHeadMenu);
+  qs("btn-compact").addEventListener("click", compactNow);
   qs("file-card").addEventListener("change", async (ev) => {
     const file = ev.target.files && ev.target.files[0];
     if (!file) return;
@@ -1355,6 +1449,7 @@ function bindStatic() {
     qs("btn-theme").textContent = next === "dark" ? "☀" : "☾";
   });
   qs("btn-collapse").addEventListener("click", () => {
+    if (isNarrow()) { hideChat(); return; }   // 窄屏是抽屉，没有「收起」这回事
     const app = document.getElementById("app");
     // 别拿 inline style 猜当前状态：窄屏默认宽度来自媒体查询，inline 是空的，
     // 于是第一次点击会把"74px"再写一遍，按钮看起来是坏的。读实际算出来的列宽。
@@ -1376,6 +1471,7 @@ function bindStatic() {
     if (ev.key === "Escape") {
       if (!qs("modal-root").hidden) dismissModals();
       else if (!qs("picker").hidden) togglePicker(false);
+      else if (isChatOpen()) hideChat();
       const lb = document.querySelector(".lightbox");
       if (lb) lb.remove();
     }

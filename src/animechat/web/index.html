@@ -48,8 +48,13 @@
     </nav>
   </aside>
 
-  <main class="main">
+  <main class="main" id="main">
+    <!-- 推入式导航（Telegram 手机版那种：窄屏先看到列表，点开会话后聊天区从右侧
+         滑入盖住列表，头部用 ← 退回列表）。返回键只在窄屏显示，放在 .chat-head 里
+         而不是 .main 里：chat-head 在没有会话时整个 hidden，但「正在加载 / 列表态」
+         时聊天区本来就该收起，所以放这里不会挡住进列表的门。 -->
     <header class="chat-head" id="chat-head" hidden>
+      <button class="back-btn" id="btn-back" title="返回列表" aria-label="返回角色与会话列表">←</button>
       <button class="avatar-btn" id="head-avatar" title="编辑角色"></button>
       <div class="head-info">
         <b id="head-name">—</b>
@@ -61,6 +66,9 @@
         <button id="btn-compact" title="把较早的对话压缩成角色记忆">总结记忆</button>
         <button id="btn-del-conv" title="删除当前会话">删除</button>
       </div>
+      <!-- 手机上 .head-actions 那三个文字按钮排不进一行（360px 会横向溢出），
+           换成一个 ⋯ 打开同样的动作；宽屏由样式 display:none 藏掉。 -->
+      <button id="btn-head-menu" class="head-menu-btn" title="会话操作" aria-label="会话操作">⋯</button>
     </header>
 
     <div id="banner" class="banner" hidden></div>

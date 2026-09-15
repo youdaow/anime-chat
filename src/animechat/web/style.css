@@ -92,6 +92,12 @@ body {
 
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; border: 0; background: none; }
+/* 手机上点一下会糊一块半透明灰（Chrome/WebKit 默认），跟自己的选中态撞在一起：
+   列表项、气泡、格子全都要按下去才亮一下，看着像卡住了。高亮统一关掉，
+   改由 :active 给真实的反馈（见文件末尾按悬停能力分的那一档）。 */
+* { -webkit-tap-highlight-color: transparent; }
+/* 聊天流 / 侧栏自己滚，滚到头别把整页带着一起弹（iOS 那个「拉出下一页」的橡皮筋）。 */
+.messages, .side-scroll, .picker-grid, .modal { overscroll-behavior: contain; }
 :where(button, a, input, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -221,7 +227,19 @@ button { cursor: pointer; border: 0; background: none; }
 [data-theme="dark"] .chip.mock { color: #4a3600; }
 .chip.clickable { cursor: pointer; }
 .chip.clickable:hover { border-color: var(--accent); color: var(--accent); }
+/* 推入式导航的返回键：宽屏双栏并排、不需要它，藏着；窄屏滑入聊天后才显示。 */
+.back-btn {
+  display: none; flex: none; width: 38px; height: 38px; border-radius: 10px;
+  font-size: 22px; line-height: 1; color: var(--text-soft); background: transparent;
+  border: 1px solid transparent; align-items: center; justify-content: center;
+}
+.back-btn:hover { background: var(--hover); color: var(--text); }
+.back-btn:active { background: var(--hover); }
+
 .head-actions { display: flex; gap: 6px; }
+.head-menu-btn { display: none; flex: none; width: 38px; height: 38px; border-radius: 10px;
+  font-size: 19px; line-height: 1; color: var(--text-soft); border: 1px solid var(--line);
+  background: var(--panel-solid); }
 .head-actions button {
   font-size: 12px; color: var(--text-soft); padding: 5px 10px; border-radius: 8px;
   border: 1px solid var(--line); background: var(--panel-solid);
@@ -576,62 +594,198 @@ details.more > .field:last-child { margin-bottom: 12px; }
 .lightbox { position: fixed; inset: 0; z-index: 95; background: rgba(0, 0, 0, .85); display: grid; place-items: center; cursor: zoom-out; }
 .lightbox img { max-width: 82vw; max-height: 82vh; border-radius: 6px; }
 
+/* ============================================================ 窄屏 = 抽屉侧栏
+   ≤900px（手机 + 平板 + 横屏手机）以前把侧栏收成 74px 图标窄栏，代价是把
+   搜索框、＋新建 / AI 生成 / 导入、角色与会话的「⋯」菜单、头部的上下文 /
+   总结记忆 / 删除会话全部 display:none——触屏悬停不出这些按钮，等于在手机上
+   把这些功能整个删了。现在改成覆盖式抽屉：平时收在屏幕外，点左上角 ☰ 拉出来，
+   里面就是完整的桌面版侧栏，所有入口原样回来，不必为窄栏另写一套按钮。
+   inline 的 grid-template-columns 来自「收起 / 展开侧栏」按钮，必须用
+   !important 压住，否则用户在宽屏收起过一次，到窄屏主区会跟着只剩 74px。 */
 @media (max-width: 900px) {
-  #app { grid-template-columns: 74px minmax(0, 1fr); }
-  .side-title, .conv-meta { display: none; }
-  /* 底部导航在窄栏里改成图标而不是整排隐藏：以前窗口一窄就彻底进不去设置 */
-  .side-nav { flex-direction: column; gap: 4px; padding: 8px 6px; }
-  .side-nav button[data-panel] { font-size: 0; line-height: 1; padding: 7px 0; }
-  .side-nav button[data-panel]::before { font-size: 16px; }
-    .side-nav button[data-panel="settings"]::before { content: "\2699"; }
-  .side-nav button[data-panel="about"]::before { content: "\FF1F"; }
-  .char-item, .conv-item { justify-content: center; }
-  .side-search { display: none; }
-  .ghost-only { display: none; }
+  /* 推入式导航（Telegram 手机版）：侧栏（列表）与聊天区各满屏，叠在同一格子里，
+     聊天区默认滑到右侧屏外（translateX(100%) 让它停在屏幕右边界之外），点开会话后
+     滑回 0 盖住列表，头部 ← 再把它推回去。grid 让两列都占满整格，靠 .show-chat
+     切 translateX；这样跳转动画是 GPU 合成，低端安卓也不掉帧。
+     inline 的 grid-template-columns（来自「收起 / 展开侧栏」）必须用 !important 压住。 */
+  #app { grid-template-columns: minmax(0, 1fr) !important; }
+  .sidebar, .main {
+    grid-column: 1; grid-row: 1;          /* 两栏叠在同一格 */
+    width: 100%; min-height: 0; overflow: hidden;
+    transition: transform .22s ease; will-change: transform;
+  }
+  .sidebar {
+    transform: none;                      /* 列表常驻可见 */
+    z-index: 1; border-right: none;
+  }
+  .main {
+    transform: translateX(100%);          /* 聊天区默认停在右侧屏外 */
+    z-index: 2; box-shadow: var(--shadow-pop);
+  }
+  #app.show-chat .main { transform: none; }   /* 选中会话：聊天区滑入盖住列表 */
+  /* 窄屏是单栏推入，没有「收起 / 展开」侧栏这回事；data-wide 可能残留在 DOM 上，
+     这里显式复位折叠态，确保窄屏的推入导航列表不受宽屏折叠规则污染 */
+  #btn-collapse { display: none !important; }
+  #app[data-wide="0"] .side-search,
+  #app[data-wide="0"] .side-title,
+  #app[data-wide="0"] .char-meta { display: block !important; }
+  #app[data-wide="0"] .side-block:nth-of-type(2) { display: block !important; }
+  #app[data-wide="0"] .char-item { justify-content: flex-start !important; padding: 7px 8px !important; }
+  #app[data-wide="0"] .char-item .avatar { width: 42px !important; height: 42px !important; }
+  #app[data-wide="0"] .side-nav button { font-size: 12.5px !important; }
+  #app[data-wide="0"] .side-nav button::before { content: "" !important; }
+  #app[data-wide="0"] .char-item.has-unread .avatar::after { content: none !important; }
+  .side-nav { padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
+
+  /* 头部：☰ 占了左边 46px，标题和头像跟着右移；标签 chips 在手机上没有
+     信息量还挤掉标题，收掉，把地方留给角色名和「正在输入中」。 */
+  /* 推入式导航：窄屏先看列表、点开会话才进聊天，去掉旧的「☰ 占左边 46px」内边距
+      （现在用 ← 返回键，更窄）；chips 已在上面收掉。 */
+  .chat-head { padding-left: 8px; padding-right: 10px; gap: 8px; min-height: 52px; }
+  .head-info b { font-size: 14.5px; }
+  .head-chips { display: none; }
+  /* 上下文 / 总结记忆 / 删除：以前这一档整个藏了，窄屏上没别的路径能进这三项。
+     三个文字按钮在 360px 上排不进一行（横向溢出把标题都挤没了），换成一个 ⋯，
+     点开是同样三件事的弹窗。 */
   .head-actions { display: none; }
-  /* 现在两边都有头像（34px 图 + 8px 间距）：光按百分比算会在窄屏上把气泡挤出容器，
-     所以扣掉头像占的那一条再谈百分比。 */
+  /* 推入式导航：聊天态显示 ← 返回键，列表态（没会话）隐藏——它只在从聊天退回列表时有意义 */
+  #app.show-chat .back-btn { display: flex; }
+  /* 原本把操作推到右边的是 .head-chips 的 margin-left:auto，
+     而它在窄屏被藏了——不自己补一条，角色名短时 ⋯ 会跟在文字中间。 */
+  .head-menu-btn { display: block; margin-left: auto; }
+
+  .messages { padding: 12px 12px 6px; }
+  /* 两边都有头像（34px 图 + 8px 间距）：光按百分比算会把气泡挤出容器，
+     先扣掉头像占的那一条再谈宽度。 */
   .msg-body { max-width: min(88%, calc(100% - 46px)); }
   .thread { gap: 8px; }
-  .messages { padding: 12px 12px 6px; }
-  .composer { padding: 8px 12px 12px; }
-  .picker { left: 12px; right: 12px; }
-  /* 窄栏里角色名必须留着：只剩五个无名字的小圆，用户会以为侧栏空了、也没法挑人。
-     收起按钮在底部导航里，这条媒体查询不会隐藏它。 */
-  .char-item { flex-direction: column; align-items: center; gap: 3px; padding: 7px 4px; }
-  .char-meta { display: block; width: 100%; min-width: 0; text-align: center; }
-  .char-meta b { font-size: 10.5px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .char-meta span { display: none; }
-  .char-item .pill { display: none; }
-  /* 未读气泡在这一档挂到头像右上角：窄栏只有 74px，两行文字都被藏了，
-     红点不贴到头像上就没地方显示——手机和平板主要就靠它提示有新回复。 */
-  .char-item .unread-count {
-    position: absolute; top: 2px; right: 5px; z-index: 1;
-    min-width: 17px; height: 17px; line-height: 17px; padding: 0 5px; font-size: 10.5px;
+  .composer { padding: 8px 12px calc(10px + env(safe-area-inset-bottom)); }
+  /* 表情面板改成贴在输入区上方的抽屉（Telegram 手机版的用法）。原来是
+     absolute 浮在消息流上：1690 张格子只给 58vh，面板顶到标题栏、底下还压着
+     一整行看不见的内容，关掉它只能点那个 20px 的 ×。改成文档流里的兄弟节点
+     后，消息流自己往上收缩，谁也不挡谁。 */
+  .picker {
+    position: relative; inset: auto; left: auto; right: auto; bottom: auto;
+    margin: 0 8px 8px; padding: 10px 10px 12px; border-radius: 14px;
+    max-height: 46vh; max-height: 46dvh; border: 1px solid var(--line-strong);
   }
-  /* 会话那几行在窄栏里只剩被藏空文字的空白行：气泡居中摆上去，
-     一眼看得出「这个会话有没看的回复」，而且仍然点得动。 */
-  .conv-item { min-height: 24px; }
-  .conv-item .unread-count { margin: 0 auto; }
+  .picker-head input { min-width: 0; }
+  .picker-tabs { flex: 1 1 100%; order: 3; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .picker-tabs::-webkit-scrollbar { display: none; }
+  .picker-tabs button { flex: none; }
+  .picker-grid { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; }
+  /* 弹窗改成底部抽屉：居中浮窗在 390px 宽的屏上四周只剩 8px，标题栏的 × 和
+     底下的「保存」分别在顶和底一千多像素外，单手够不着。 */
+  .modal-root { place-items: end center; }
+  .modal {
+    width: 100vw; max-width: 100vw; max-height: 92vh; max-height: 92dvh;
+    border: 0; border-top: 1px solid var(--line-strong); border-radius: 16px 16px 0 0;
+    animation: sheet-up .2s ease both;
+  }
+  .modal.wide { width: 100vw; }
+  .modal-body { padding: 14px 14px calc(16px + env(safe-area-inset-bottom)); }
+  .modal h2 { font-size: 16px; }
+  .modal h2 .x { font-size: 26px; width: 40px; height: 40px; margin: -8px -8px 0 auto; }
+  .lightbox img { max-width: 96vw; max-height: 78vh; }
 }
 
-/* 手机（含竖屏平板的小宽度）：手指比鼠标粗，气泡和点按区域都放大一档；
-   顺带把刘海 / 手势条的安全区让出来，别让发送键和底部导航被压住。 */
+/* ================================================ 折叠态（点 « 后的 74px 窄栏）
+   这是桌面专属路径：窄屏（≤900px）下 btn-collapse 已被 display:none 且不会写
+   data-wide，所以这里只跟宽屏的 data-wide="0" 挂钩，和窄屏的推入式导航互不干扰。
+   落脚是「收成图标列」：文字按钮收成图标、会话区整段隐藏（会话项没有头像，只藏
+   文字会让列表变空白，所以折叠态只留角色头像列），未读不整藏而是挂到头像右上角小圆点。
+   再套一层 min-width:901px：data-wide 属性会残留在 DOM 上，宽屏折叠后把窗口拖窄到
+   ≤900px 时，若不锁宽屏，这套折叠规则会污染窄屏推入导航的列表（两条路径必须互斥）。 */
+@media (min-width: 901px) {
+#app[data-wide="0"] .side-search,
+#app[data-wide="0"] .side-title { display: none !important; }
+#app[data-wide="0"] .side-block:nth-of-type(2) { display: none !important; }   /* 会话区整段收起 */
+#app[data-wide="0"] .char-item { justify-content: center; padding: 6px 0 !important; }
+#app[data-wide="0"] .char-meta { display: none !important; }
+#app[data-wide="0"] .char-item .avatar { width: 46px; height: 46px !important; }
+/* 未读收成头像右上角的小红点（不藏，折叠态下照样能看见新消息） */
+#app[data-wide="0"] .char-item.has-unread .avatar { position: relative !important; }
+#app[data-wide="0"] .char-item.has-unread .avatar::after {
+  content: ""; position: absolute; top: -2px; right: -2px;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--danger); border: 2px solid var(--panel); box-sizing: border-box;
+}
+/* 文字按钮收成图标：用 ::before 补字形，font-size:0 吃掉原文字 */
+#app[data-wide="0"] .side-nav button { font-size: 0 !important; }
+#app[data-wide="0"] .side-nav button[data-panel="settings"]::before { content: "\2699"; font-size: 18px; }
+#app[data-wide="0"] .side-nav button[data-panel="about"]::before { content: "?"; font-size: 18px; }
+#app[data-wide="0"] .theme-btn::before { content: "\263E"; font-size: 18px; }
+#app[data-wide="0"] .icon-btn#btn-sfx::before { content: "\1F50A"; font-size: 17px; }
+}
+
+/* ================================================================ 手机
+   ≤620px：手指比鼠标粗，字和点按区域再放大一档；两列表单在 360px 上每格只剩
+   150px（「模型」和「超时（秒）」并排时输入框被挤成一条，数字都显示不全），
+   一律改单列；输入框字号必须 ≥16px——小于 16px 在 iOS 上一聚焦就自动放大页面，
+   且发完消息不缩回去。 */
 @media (max-width: 620px) {
-  .char-item { padding: 9px 3px 8px; }
-  .char-item .unread-count {
-    top: 1px; right: 2px; min-width: 18px; height: 18px; line-height: 18px; font-size: 11px;
-  }
-  .conv-item { min-height: 28px; }
   .messages { padding: 10px 10px 6px; }
-  .msg-body { max-width: min(86%, calc(100% - 46px)); }
-  .sticker-shot { width: 128px; }
+  .msg-body { max-width: calc(100% - 46px); }
+  .bubble { font-size: 15px; }
+  .sticker-shot { width: 128px; max-width: 40vw; }
+  /* 气泡底下那行（时间 / 模型 / 复制 / 重新生成 / 删到这儿）原本 11px 文字、
+     按钮 padding 0 2px ≈ 15px 高：手指按不准也按不中。 */
+  .msg-meta { flex-wrap: wrap; gap: 2px 10px; padding: 2px 3px 0; }
+  .msg-meta button { font-size: 12px; padding: 5px 6px; min-height: 30px; }
+
   .composer { padding: 6px 10px calc(10px + env(safe-area-inset-bottom)); }
-  .side-nav { padding: 8px 6px calc(8px + env(safe-area-inset-bottom)); }
-  .side-nav button { padding: 9px 4px; }
-  .picker { left: 6px; right: 6px; }
+  #input { font-size: 16px; max-height: 30vh; }
+  #input::placeholder { font-size: 14px; }
+  .send { padding: 9px 16px; font-size: 15px; }
+  .round { width: 40px; height: 40px; }
+  .group-bar button:not(.pick-chip) { padding: 8px 12px; }
+  .pick-chip { padding: 7px 12px; }
+
+  .picker-head input { font-size: 16px; padding: 9px 12px; }
+  .picker-head .close { font-size: 26px; padding: 0 10px; min-height: 34px; }
+  .picker-emotions button { padding: 6px 11px; }
+  .picker-foot button { padding: 8px 12px; }
+  .sticker-cell .cell-btn { width: 28px; height: 28px; font-size: 13px; }
+
+  /* 抽屉里那些小控件（列表行的 ⋯、＋新建 / AI 生成 / 导入 / ＋群聊）原本是给
+     鼠标设计的：26px 高、⋯ 只有 19x19，手指按下去十次误按三次。触屏一档全部
+     放大到能按准的尺寸——这是抽屉方案能不能用的关键，光把入口露出来不够。 */
+  .ghost-only { width: 38px; height: 38px; font-size: 17px; }
+  .side-tools button, .file-btn { padding: 9px 14px; font-size: 13px; }
+  .char-item, .conv-item { padding: 10px 8px; }
+  .char-item .ghost-only, .conv-item .ghost-only { margin-right: -6px; }
+  .side-search input { font-size: 16px; padding: 10px 14px; }
+  .side-title { margin: 12px 6px 8px; }
+  .field input, .field textarea, .field select { font-size: 16px; padding: 10px 12px; }
+  .field textarea { min-height: 88px; }
+  .grid-2, .grid-3 { grid-template-columns: 1fr; gap: 0; }
+  .grid-2 > .field, .grid-3 > .field { margin-bottom: 12px; }
+  .modal .sub { font-size: 12.5px; margin-bottom: 12px; }
+  button.primary, button.plain, button.danger { padding: 11px 16px; font-size: 14.5px; }
+  .row-actions { gap: 8px; }
+  .row-actions button { flex: 1 1 auto; min-height: 42px; }
+  .pick-list { max-height: 40vh; }
+  .pick-row { padding: 9px 8px; }
+  .tpl-row { padding: 10px; }
+  .chip { padding: 7px 13px; }
+  .lib-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+  .kv { font-size: 12.5px; }
+  .crop-bar input[type=range] { max-width: none; }
   .toast-root { left: 10px; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); }
-  .toast { max-width: none; }
+  .toast { max-width: none; font-size: 13.5px; }
+}
+
+@keyframes sheet-up { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
+
+/* 触屏上没有 hover：那些「悬停才冒出来」的按钮（列表里的 ⋯ 菜单、格子的放大
+   预览）平时是 opacity:0，手指永远点不到。判据用「有没有悬停能力」而不是
+   「指针粗不粗」——触屏笔记本的指针是细的、也有鼠标，不该被一起算进来。 */
+@media (hover: none) {
+  .char-item .ghost-only, .conv-item .ghost-only { opacity: 1; }
+  .sticker-cell .cell-btn.zoom { opacity: 1; }
+  .char-item:hover, .conv-item:hover { background: none; }
+  .char-item:active, .conv-item:active, .round:active, .send:active,
+  .pick-row:active, .sticker-cell:active { background: var(--hover); }
 }
 
 /* 手机浏览器的地址栏会伸缩：只在支持 dvh 的环境下用动态视口高，
@@ -639,5 +793,33 @@ details.more > .field:last-child { margin-bottom: 12px; }
 @supports (height: 100dvh) {
   #app { height: 100dvh; }
 }
+
+/* 软键盘：iOS Safari 上键盘只压缩 visualViewport，#app 的 100dvh 一动不动，
+   于是输入框和刚打出来的字整个被键盘盖住（发消息要摸黑打）。app.js 把
+   「布局视口 − 可视视口」写成 --kb，这里直接从 #app 的高度里扣掉：输入区被顶到
+   键盘正上方，消息流跟着变矮但仍在自己的滚动区里。Android 的键盘会压缩布局视口，
+   差值算出来是 0，两条路互不冲突。 */
+#app.kb-up { height: calc(100dvh - var(--kb)); }
+/* 弹窗是 fixed 铺满视口的：键盘弹起时抽屉的下沿（也就是「保存」那一排）在键盘
+   后面。--kb 挂在 :root 上（弹窗根节点是 #app 的兄弟，挂 #app 继承不到），
+   不用 :has()（旧 Safari 不认）：没有键盘时 --kb 就是 0px，无条件加没有副作用。
+   这条在文件末尾，会盖过窄屏媒体查询里那条 padding 的下沿，所以安全区和键盘
+   两个都要在这里算进来，不然刘海屏的底部内边距就丢了。 */
+.modal-body {
+  padding-bottom: calc(20px + env(safe-area-inset-bottom) + var(--kb, 0px));
+}
+/* 头部副标题（角色出处 /「正在输入中」）没有省略号时，360px 上会把整行撑出容器 */
+.head-info { overflow: hidden; }
+.head-info b, .head-info span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 低端安卓机每条消息的 0.5s 弹入都掉帧；有晕动偏好的人看着也不舒服。 */
+@media (prefers-reduced-motion: reduce) {
+  .msg.enter, .msg.enter .bubble, .msg.enter .avatar, .msg.enter .sticker-shot,
+  .empty-art, .picker, .modal, .toast { animation: none !important; }
+  .messages { scroll-behavior: auto; }
+  .sidebar { transition: none; }
+}
+
+
 
 .hidden { display: none !important; }
