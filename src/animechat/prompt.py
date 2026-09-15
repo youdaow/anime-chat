@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .config import Settings
 from .emotion import EMOTION_LABELS
 from .emotion import label as emotion_label
@@ -13,6 +15,12 @@ from .models import Character
 MAX_EXAMPLE_TURNS = 6
 EMOTION_CHOICES = "、".join(k + "/" + v for k, v in EMOTION_LABELS.items())
 
+# 占位哈希名：批量导入（QQ 本地表情那类）的图，label 往往是「来源·一串内容哈希」，
+# 情绪又都是 neutral。模型既看不懂这种名字、按情绪兜底也发不出它（server 那侧
+# neutral 直接不配图）。留在词表里纯占坑、费 token，还误导模型以为有得选。
+# 认「≥10 位连续十六进制」——不写死任何来源词，别的来源的哈希名同理生效。
+_PLACEHOLDER_HEX = re.compile(r"[0-9a-fA-F]{10}")
+
 
 def sticker_vocab(lib, limit: int = 120) -> str:
     """把库里的标签压成提示词里的「可选表情」清单。
@@ -20,18 +28,29 @@ def sticker_vocab(lib, limit: int = 120) -> str:
     每张都带上情绪名：联网抓回来的表情名字起得随便（甚至就是一串哈希），
     「它在演什么」才是模型唯一能看懂的线索。
     """
-    lines: list[str] = []
+    entries: list[tuple[str, bool]] = []
+    seen_lines: set[str] = set()
     for st in lib.all():
+        # 占位哈希名的中性图不进词表（见 _PLACEHOLDER_HEX）。
+        if st.emotion == "neutral" and _PLACEHOLDER_HEX.search(st.label or ""):
+            continue
         words = [st.label] + [t for t in st.tags if t != st.label][:3]
         uniq = [w for w in dict.fromkeys(x for x in words if x)]
         line = "/".join(uniq)
         if not line:
             continue
-        lines.append(line + "(" + emotion_label(st.emotion) + ")")
-    # 搜一次「杂鱼」能加进来十几张，定义完全一样：词表里刷十几遍既费 token，又让模型
-    # 以为有一堆不同的可选。同一定义只列一次（挑哪张是服务端按分数的事，跟这里无关）。
-    distinct = list(dict.fromkeys(lines))
-    return "、".join(distinct[:limit]) or "（表情库为空，不要输出 sticker 标记）"
+        line = line + "(" + emotion_label(st.emotion) + ")"
+        # 搜一次「杂鱼」能加进来十几张，定义完全一样：词表里刷十几遍既费 token，
+        # 又让模型以为有一堆不同的可选。同一定义只列一次。
+        if line in seen_lines:
+            continue
+        seen_lines.add(line)
+        entries.append((line, st.emotion == "neutral"))
+    # 非「平常」情绪的排前面：过滤掉哈希占位图后，剩下的中性图（如「柚子厨」）
+    # 仍不该压过有明确情绪的图。sort 稳定，精挑那批的相对次序不变。
+    entries.sort(key=lambda e: e[1])
+    ordered = [e[0] for e in entries]
+    return "、".join(ordered[:limit]) or "（表情库为空，不要输出 sticker 标记）"
 
 
 def _style_rule(char: Character) -> str:

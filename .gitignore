@@ -24,6 +24,10 @@ data/*
 !data/stickers/
 !data/stickers_meta.json
 
+# QQ 本地表情库导入的那批图（scripts/import_qq_stickers.py 生成，前缀 qq）：
+# 是你私人收藏/收到的聊天表情，不进公开仓库。联网抓的公开表情仍按上面的 ! 放行。
+data/stickers/qq*
+
 # 白名单之外，data/ 里这些**绝对不能上传**，再显式钉一遍做双保险：
 #   animechat.db    所有聊天记录（会话 + 消息 + 未读水位）
 #   settings.json   模型 Key、飞书 App Secret、GitHub Token 全在这里
