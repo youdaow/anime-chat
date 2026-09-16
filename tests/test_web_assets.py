@@ -235,8 +235,32 @@ def test_finalize_live_message_only_replaces_owner_wrap():
     fn = app[app.index("function finalizeLiveMessage("):app.index("// #messages 里可能残留空白文本节点")]
     assert "const here = live.ownerConv != null && state.convId === live.ownerConv;" in fn, \
         "局部替换前要校验会话归属"
-    assert "if (!here || live.failed || !wrap || !wrap.parentNode) return;" in fn, \
-        "切走别的会话，或失败气泡，都不要重绘成普通消息"
+    assert "if (!here) {" in fn and "wrap.remove();" in fn, \
+        "切走别的会话时要立即清掉旧 thread 里的 live wrap"
+    assert "if (live.failed || !wrap || !wrap.parentNode) return;" in fn, \
+        "失败气泡或没有挂载的 wrap 不要重绘成普通消息"
+
+
+def test_abort_keeps_partial_stream_as_stopped_message():
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    send_fn = app[app.index("async function send("):app.index("/* ---------------------------------------------------------- 群聊控制")]
+    catch_fn = send_fn[send_fn.index("  } catch (err) {"):send_fn.index("  } finally {")]
+    abort_if = catch_fn.index('if (err.name !== "AbortError") {')
+    assert "live.failed = true;" not in catch_fn[:abort_if], "AbortError 不能被预标记为失败"
+    assert "live.failed = true;" in catch_fn and "live.fail(err.message);" in catch_fn, \
+        "真实请求失败仍要进入失败分支"
+    assert "else live.finish(true);" in catch_fn, "主动停止要走正常收尾，保留已收到的正文/表情"
+
+
+def test_new_message_button_tracks_scroll_and_narrow_chat_visibility():
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    assert 'qs("messages").addEventListener("scroll", paintNewMessages);' in app, \
+        "滚动消息流时要刷新新消息按钮"
+    assert "function chatVisible()" in app and "return !isNarrow() || isChatOpen();" in app, \
+        "窄屏抽屉关闭时不能显示新消息按钮"
+    block = media_block(CSS, "@media (max-width: 900px)")
+    assert ".main {\n    transform: translateX(100%)" in block, "窄屏聊天区默认要滑出屏幕"
+    assert "#app.show-chat .main { transform: none; }" in block, "窄屏打开聊天后才显示消息区"
 
 
 def test_live_bubble_defers_speaker_to_start_event():

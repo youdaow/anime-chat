@@ -688,9 +688,15 @@ function finalizeLiveMessage(live, stopped, text, wrap) {
     if (index >= 0) state.messages[index] = msg;
     else state.messages.push(msg);
   }
+  // 流结束时用户可能已经切走：旧会话 DOM 里的 live wrap 必须当场清掉，
+  // 不能等下一次 renderThread 才处理，否则它会短暂留在错误的消息流里。
+  if (!here) {
+    if (wrap && wrap.parentNode) wrap.remove();
+    return;
+  }
   /* 失败的气泡本身就是终态（红字 + 重试 / 打开设置），换成 messageNode 反而把那两个
      按钮弄丢；所以只记账、不重绘。 */
-  if (!here || live.failed || !wrap || !wrap.parentNode) return;
+  if (live.failed || !wrap || !wrap.parentNode) return;
   const permanent = messageNode(msg);
   wrap.parentNode.replaceChild(permanent, wrap);
   if (isNearBottom(threadEl())) scrollBottom(); else paintNewMessages();
@@ -759,11 +765,12 @@ async function send(opts) {
       regenerate: !!options.regenerate, auto: !!options.auto, speaker: speaker || "",
     }, live, state.abort.signal);
   } catch (err) {
-    live.failed = true;
     if (err.name !== "AbortError") {
+      live.failed = true;
       live.fail(err.message);
       live.finish(false);
     }
+    // 主动停止不是失败：已收到的正文/表情仍是有效回复，要固化为“已中断”消息。
     else live.finish(true);
   } finally {
     state.streaming = false;
