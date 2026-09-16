@@ -1147,7 +1147,7 @@ function togglePicker(force) {
   if (want) {
     renderPicker();
     if (isNarrow()) {
-      // 面板在文档流里挤在输入区上方，不滚一下可能整块还在屏幕外
+      // 面板是 .main 的最后一个 flex 子节点（在输入框下方），不滚一下可能整块还在屏幕外
       if (picker.scrollIntoView) picker.scrollIntoView({ block: "end", behavior: "smooth" });
     } else {
       qs("picker-q").focus({ preventScroll: true });

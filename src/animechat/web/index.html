@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>二次元聊天 AI · 会发表情包的那种</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🌸</text></svg>">
-<link rel="stylesheet" href="/web/style.css?v=2">
+<link rel="stylesheet" href="/web/style.css?v=3">
 </head>
 <body>
 <div id="app">
@@ -76,23 +76,6 @@
     <div class="messages" id="messages"></div>
     <button id="btn-new-messages" class="new-messages" type="button" hidden aria-label="有新消息，回到底部">↓ 新消息</button>
 
-    <div class="picker" id="picker" hidden>
-      <div class="picker-head">
-        <input id="picker-q" type="search" placeholder="搜表情（标签：傲娇、加油、无语…）">
-        <div class="picker-tabs" id="picker-tabs">
-          <button data-tab="all" class="on">全部</button>
-          <button data-tab="favorite">收藏</button>
-          <button data-tab="builtin">内置</button>
-          <button data-tab="user">我的</button>
-          <button data-tab="web">联网搜索</button>
-        </div>
-        <button id="picker-close" class="close">×</button>
-      </div>
-      <div class="picker-emotions" id="picker-emotions"></div>
-      <div class="picker-grid" id="picker-grid"></div>
-      <div class="picker-foot" id="picker-foot"></div>
-    </div>
-
     <footer class="composer" id="composer" hidden>
       <!-- 群聊专用：让 AI 之间自己接话，不用你每句都喂 -->
       <div class="group-bar" id="group-bar" hidden>
@@ -118,6 +101,22 @@
       </div>
       <div class="composer-hint" id="composer-hint"></div>
     </footer>
+    <div class="picker" id="picker" hidden>
+      <div class="picker-head">
+        <input id="picker-q" type="search" placeholder="搜表情（标签：傲娇、加油、无语…）">
+        <div class="picker-tabs" id="picker-tabs">
+          <button data-tab="all" class="on">全部</button>
+          <button data-tab="favorite">收藏</button>
+          <button data-tab="builtin">内置</button>
+          <button data-tab="user">我的</button>
+          <button data-tab="web">联网搜索</button>
+        </div>
+        <button id="picker-close" class="close">×</button>
+      </div>
+      <div class="picker-emotions" id="picker-emotions"></div>
+      <div class="picker-grid" id="picker-grid"></div>
+      <div class="picker-foot" id="picker-foot"></div>
+    </div>
   </main>
 </div>
 
