@@ -186,3 +186,80 @@ def test_narrow_screen_does_not_auto_open_keyboard():
     # 桌面端仍然要抢焦点，那是效率不是 bug
     assert "qs(\"input\").focus({ preventScroll: true })" in fn, "宽屏的自动聚焦别一起删了"
 
+
+def test_new_message_button_exists_and_is_hidden_by_default():
+    button = re.search(r'<button[^>]*id="btn-new-messages"[^>]*>', HTML)
+    assert button, "index.html 里要有 #btn-new-messages 按钮"
+    assert 'hidden' in button.group(0), "按钮默认得是隐藏态"
+    assert 'aria-label' in button.group(0), "按钮要有无障碍标签"
+
+
+def test_new_message_button_is_after_messages_and_before_picker():
+    messages_index = HTML.index('id="messages"')
+    button_index = HTML.index('id="btn-new-messages"')
+    picker_index = HTML.index('id="picker"')
+    assert messages_index < button_index < picker_index, \
+        "#messages -> #btn-new-messages -> #picker 的 DOM 顺序不能乱，否则窄屏可能被表情面板盖住"
+
+
+def test_new_message_button_click_scrolls_to_bottom():
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    assert 'qs("btn-new-messages").addEventListener("click", scrollBottom)' in app, \
+        "新消息按钮点一下直接滚到底，不要重画历史"
+
+
+def test_open_conversation_paints_new_messages_button():
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    fn = app[app.index("async function openConversation("):app.index("/* 等回复时不往消息流塞气泡")]
+    assert "paintNewMessages();" in fn, "开会话后要刷新新消息按钮状态"
+
+
+def test_near_bottom_threshold_uses_72px():
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    assert "function isNearBottom(box, threshold = 72)" in app, \
+        "near-bottom 阈值必须锁 72px，避免上下 10px 内反复横跳"
+
+
+def test_failed_stream_persists_in_messages():
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    assert 'meta: live.failed ? Object.assign({ error: live.errorText || "请求失败" }, meta) : meta' in app, \
+        "失败流要把错误写入消息对象，否则刷新后错误原因丢失"
+    fail_line = "    live.fail(message, hint);"
+    fail_idx = app.index(fail_line)
+    after_fail = app[fail_idx + len(fail_line):app.index("return;", fail_idx)]
+    assert "live.finish(false);" in after_fail, "非 200 分支要在 fail 后收尾并持久化"
+
+
+def test_finalize_live_message_only_replaces_owner_wrap():
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    fn = app[app.index("function finalizeLiveMessage("):app.index("// #messages 里可能残留空白文本节点")]
+    assert "const here = live.ownerConv != null && state.convId === live.ownerConv;" in fn, \
+        "局部替换前要校验会话归属"
+    assert "if (!here || live.failed || !wrap || !wrap.parentNode) return;" in fn, \
+        "切走别的会话，或失败气泡，都不要重绘成普通消息"
+
+
+def test_live_bubble_defers_speaker_to_start_event():
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    create = app[app.index("function createLiveBubble("):app.index("async function streamChat(")]
+    assert "nextSpeakerId()" not in create, "createLiveBubble 里不能再提前猜下一个群聊发言人"
+    assert "function applySpeaker(speaker) {" in create, "要有统一的 applySpeaker 辅助函数"
+    start = app.index('if (name === "start") {')
+    end = app.index('} else if (name === "text")', start)
+    start_handler = app[start:end]
+    assert "live.updateSpeaker(data.speaker)" in start_handler, \
+        "start 事件要立刻把头像/署名改成服务端指定的 speaker"
+
+
+def test_narrow_picker_is_inflow_drawer():
+    block = media_block(CSS, "@media (max-width: 900px)")
+    assert ".picker {" in block, "窄屏媒体查询里必须重写 .picker，确保抽屉化"
+    picker_block = block[block.index(".picker {"):block.index("}", block.index(".picker {")) + 1]
+    for forbidden in ("position: absolute", "left: 22px", "right: 22px", "bottom: 92px"):
+        assert forbidden not in picker_block, "窄屏 .picker 不能是 absolute 浮层：" + picker_block
+
+
+def test_new_message_button_has_safe_area_on_narrow_screen():
+    block = media_block(CSS, "@media (max-width: 900px)")
+    assert ".new-messages { bottom: calc(10px + env(safe-area-inset-bottom));" in block, \
+        "窄屏新消息按钮也要留安全区，避免被手势条或 picker 盖住"

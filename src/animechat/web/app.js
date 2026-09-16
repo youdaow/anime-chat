@@ -60,7 +60,7 @@ function isChatOpen() { return document.getElementById("app").classList.contains
 function showChat() { document.getElementById("app").classList.add("show-chat"); }
 
 /* 退回列表：聊天区滑回右侧屏外。← 返回键和 Esc 都走它。 */
-function hideChat() { document.getElementById("app").classList.remove("show-chat"); }
+function hideChat() { document.getElementById("app").classList.remove("show-chat"); paintNewMessages(); }
 
 /* 输入框提示语：手机上「Enter 发送 / Shift+Enter 换行」既打不出来、又把真正有用的
    提示挤到看不见（实测 390px 上「Shift+Enter 换行」被截成半行）。触屏上换行靠
@@ -378,6 +378,7 @@ async function openConversation(id) {
     renderSidebar();
     renderHead();
     renderThread();
+    paintNewMessages();
     qs("composer").hidden = false;
     /* 窄屏别抢焦点：一聚焦就弹软键盘，键盘把刚打开的历史整个遮住，
        用户进来只看到一片空白。要打字他自己会点输入框。 */
@@ -630,9 +631,69 @@ function showAttempts(attempts) {
   ]));
 }
 
+function isNearBottom(box, threshold = 72) {
+  return box.scrollHeight - (box.scrollTop + box.clientHeight) <= threshold;
+}
+
+function chatVisible() {
+  return !isNarrow() || isChatOpen();
+}
+
 function scrollBottom() {
   const box = qs("messages");
   box.scrollTop = box.scrollHeight;
+  paintNewMessages();
+}
+
+function paintNewMessages() {
+  const btn = qs("btn-new-messages");
+  if (!btn) return;
+  const box = qs("messages");
+  const show = chatVisible() && !isNearBottom(box);
+  if (show === btn.hidden) {
+    btn.hidden = !show;
+    btn.textContent = "↓ 新消息";
+  }
+}
+
+function liveMessage(live, stopped, text) {
+  const meta = {};
+  if (live.reasoning) meta.reasoning = live.reasoning;
+  if (live.model) meta.model = live.model;
+  if (live.elapsedMs) meta.elapsed_ms = live.elapsedMs;
+  if (live.promptChars) meta.prompt_chars = live.promptChars;
+  if (live.attempts && live.attempts.length) meta.attempts = live.attempts.slice();
+  if (stopped) meta.stopped = true;
+  return {
+    id: live.messageId || -Date.now(),
+    role: "assistant",
+    content: text,
+    stickers: live.stickers.slice(),
+    emotion: live.emotion,
+    sticker_objects: live.stickerObjects || [],
+    created_at: Date.now() / 1000,
+    speaker: live.speaker || null,
+    meta: live.failed ? Object.assign({ error: live.errorText || "请求失败" }, meta) : meta,
+  };
+}
+
+function finalizeLiveMessage(live, stopped, text, wrap) {
+  if (live.finalized) return;
+  live.finalized = true;
+  const msg = liveMessage(live, stopped, text);
+  // 切走之后 state.messages 是别人家的数组，一条都不许往里塞
+  const here = live.ownerConv != null && state.convId === live.ownerConv;
+  if (here) {
+    const index = state.messages.findIndex((item) => item.id === msg.id);
+    if (index >= 0) state.messages[index] = msg;
+    else state.messages.push(msg);
+  }
+  /* 失败的气泡本身就是终态（红字 + 重试 / 打开设置），换成 messageNode 反而把那两个
+     按钮弄丢；所以只记账、不重绘。 */
+  if (!here || live.failed || !wrap || !wrap.parentNode) return;
+  const permanent = messageNode(msg);
+  wrap.parentNode.replaceChild(permanent, wrap);
+  if (isNearBottom(threadEl())) scrollBottom(); else paintNewMessages();
 }
 
 // #messages 里可能残留空白文本节点，所以永远显式取 .thread，不用 firstChild
@@ -661,6 +722,7 @@ async function send(opts) {
   if (!options.regenerate && !options.auto && !text && !stickers.length) return;
 
   // 用户自己的消息先本地落一屏，不等接口
+  const wasNearBottom = isNearBottom(threadEl());
   if (!options.regenerate && !options.auto) {
     const optimistic = {
       id: -Date.now(), role: "user", content: text, stickers: stickers,
@@ -678,7 +740,7 @@ async function send(opts) {
     // 表情面板挡着聊天流，选完发完就该让位；以前要手动点 × 才能看到回复。
     if (!qs("picker").hidden) togglePicker(false);
   }
-  scrollBottom();
+  if (wasNearBottom) scrollBottom(); else paintNewMessages();
 
   // 这一轮点名让谁说；发完就交回给轮转，下一条自动换人
   const speaker = options.speaker || null;
@@ -688,7 +750,7 @@ async function send(opts) {
   renderSendButton();
   setTyping(true, speaker ? charName(speaker) : "");
 
-  const live = createLiveBubble(speaker);
+  const live = createLiveBubble();
   try {
     await streamChat({
       conversation_id: sentTo,
@@ -698,7 +760,10 @@ async function send(opts) {
     }, live, state.abort.signal);
   } catch (err) {
     live.failed = true;
-    if (err.name !== "AbortError") live.fail(err.message);
+    if (err.name !== "AbortError") {
+      live.fail(err.message);
+      live.finish(false);
+    }
     else live.finish(true);
   } finally {
     state.streaming = false;
@@ -710,11 +775,9 @@ async function send(opts) {
     /* 刚回的那句要不要算读到，只看「此刻屏幕上是不是这个会话、标签页在前台」：
        中途切去看别人 / 切到后台的话，它就是一条正经未读，红点得留着。 */
     if (state.convId && document.visibilityState === "visible") markRead(state.convId);
-    // 成功后按服务端的真 id 重画一遍，「删到这儿」才不会打在临时 id 上；
-    // 失败时保留那条带建议的错误气泡，别把它刷没。
-    // 只在用户还看着这个会话时重画：中途切了去看别人，就别把人家正看的窗口抢走，
-    // 那句回复已经落库，切回来自然看得到（侧栏此时该有红点）。
-    if (!live.failed && state.convId === sentTo) await openConversation(sentTo);
+    // 成功回复已经由流式收尾局部落屏，这里不用再整段拉历史重绘；
+    // 只在用户还看着这个会话时刷新新消息按钮状态。
+    if (!live.failed && state.convId === sentTo) paintNewMessages();
     renderGroupBar();
   }
 }
@@ -829,24 +892,52 @@ function regenerate() {
   send({ regenerate: true });
 }
 
-function createLiveBubble(forced) {
+function createLiveBubble() {
   /* 这条流属于发起它的那个会话。用户中途切去看别人，气泡、滚动、state.messages
      都不许跟到新会话里去——以前首字一到就 threadEl().appendChild(wrap)，
      而 threadEl() 拿的是「此刻屏幕上」那个 .thread，于是 A 的回复画进了 B 的窗口。 */
   const ownerConv = state.convId;
+  const ownerConversation = state.conversation;
+  const ownerIds = convIds(ownerConversation);
+  const ownerIsGroup = ownerIds.length > 1;
   const onScreen = () => state.convId === ownerConv;
-  // 群聊：气泡要挂在"即将开口的那个人"名下，单聊就是会话主角
-  const char = forced ? charById(forced)
-    : (isGroup() ? (charById(nextSpeakerId()) || currentChar()) : currentChar());
   const body = el("div", { class: "msg-body" });
-  if (isGroup() && char) body.appendChild(el("div", { class: "msg-name", text: char.name }));
   const stickerRow = el("div", { class: "sticker-row" });
   const bubble = el("div", { class: "bubble" });
   const meta = el("div", { class: "msg-meta" });
   body.appendChild(stickerRow);
   body.appendChild(bubble);
   body.appendChild(meta);
-  const wrap = el("div", { class: "msg" }, [avatarNode(char, "avatar sm"), body]);
+  const wrap = el("div", { class: "msg" }, [body]);
+  /* 说话的人只以服务端 start 事件里的 speaker 为准；点名 / 重新生成时，
+     不再提前把头像挂到轮转顺序里的下一个人脸上。 */
+  let avatarEl = null;
+  let nameEl = null;
+  function applySpeaker(speaker) {
+    const char = speaker ? charById(speaker) : null;
+    if (!avatarEl && char) {
+      avatarEl = avatarNode(char, "avatar sm");
+      wrap.insertBefore(avatarEl, body);
+    } else if (avatarEl && char) {
+      const next = avatarNode(char, "avatar sm");
+      avatarEl.replaceWith(next);
+      avatarEl = next;
+    } else if (avatarEl && !char) {
+      avatarEl.remove();
+      avatarEl = null;
+    }
+    if (ownerIsGroup && char) {
+      if (!nameEl) {
+        nameEl = el("div", { class: "msg-name", text: char.name });
+        body.insertBefore(nameEl, stickerRow);
+      } else {
+        nameEl.textContent = char.name;
+      }
+    } else if (nameEl) {
+      nameEl.remove();
+      nameEl = null;
+    }
+  }
   /* 等首字时不再先甩一个空气泡：微信/Telegram 都是「对方名字底下显示正在输入」，
      气泡要等内容真的到了才出现。所以节点先建好挂着，第一次有内容才挂进消息流。 */
   let mounted = false;
@@ -858,7 +949,7 @@ function createLiveBubble(forced) {
     wrap.classList.add("enter");   // 首字到达这一刻，气泡从头像那侧弹进来
     threadEl().appendChild(wrap);
     setTyping(false);
-    scrollBottom();
+    if (isNearBottom(threadEl())) scrollBottom();
   }
 
   let text = "";
@@ -867,6 +958,10 @@ function createLiveBubble(forced) {
   let thinkBody = null;
   let thinkSummary = null;
   const live = {
+    ownerConv,
+    finalized: false,
+    failed: false,
+    stopped: false,
     stickers: [],
     emotion: null,
     reasoning: "",
@@ -913,53 +1008,26 @@ function createLiveBubble(forced) {
         live.foldThink();     // 开始说正事了，思考过程让位
       }
       textNode.nodeValue = text;
-      if (mounted) scrollBottom();   // 切走了就别滚动人家正在看的会话
+      if (mounted && isNearBottom(threadEl())) scrollBottom();   // 切走了就别滚动人家正在看的会话
     },
     sticker(st) {
       mount();
       live.stickers.push(st.id);
       stickerRow.appendChild(stickerNode(Object.assign({}, st, { auto: st.auto })));
-      scrollBottom();
+      if (isNearBottom(threadEl())) scrollBottom(); else paintNewMessages();
     },
     emotionSet(key) {
       live.emotion = key;
       clear(meta);
       meta.appendChild(el("span", { class: "chip emo", text: emotionLabel(key) }));
     },
+    updateSpeaker(speaker) {
+      applySpeaker(speaker);
+    },
     finish(stopped) {
       mount();
       live.foldThink();
-      /* 切走了就不往 state.messages 里塞：那个数组现在是「另一个会话」的消息列表，
-         塞进去等于把 A 的回复画到 B 的窗口上。内容早就落库了，切回来 GET 一遍就有。 */
-      const here = onScreen();
-      if (live.failed) {
-        // 已经报错了就别再拿「没有收到内容」把错误气泡盖掉，否则用户看不到原因
-        if (here) state.messages.push({
-          id: live.messageId || -Date.now(), role: "assistant", content: text,
-          stickers: live.stickers.slice(), emotion: live.emotion,
-          sticker_objects: live.stickerObjects || [], created_at: Date.now() / 1000,
-          meta: { error: live.errorText || "请求失败", reasoning: live.reasoning || "" },
-        });
-        return;
-      }
-      if (!textNode) { clear(bubble); bubble.appendChild(el("span", { text: live.stickers.length && !text ? "" : "（没有收到内容）" })); }
-      clear(meta);
-      meta.appendChild(el("span", { text: fmtTime(Date.now() / 1000) }));
-      if (live.emotion) meta.appendChild(el("span", { class: "chip emo", text: emotionLabel(live.emotion) }));
-      if (live.info) meta.appendChild(el("span", { class: "chip", text: live.info }));
-      if (live.attempts && live.attempts.length) {
-        meta.appendChild(el("button", {
-          text: "路由 " + live.attempts.length + " 次", title: "看网关这次打了哪些上游",
-          onclick: () => showAttempts(live.attempts),
-        }));
-      }
-      if (stopped) meta.appendChild(el("span", { class: "chip", text: "已中断" }));
-      if (here) state.messages.push({
-        id: live.messageId || -Date.now(), role: "assistant", content: text,
-        stickers: live.stickers.slice(), emotion: live.emotion,
-        sticker_objects: live.stickerObjects || [], created_at: Date.now() / 1000,
-        meta: live.reasoning ? { reasoning: live.reasoning } : {},
-      });
+      finalizeLiveMessage(live, stopped || live.stopped, text, wrap);
     },
     fail(message, hint) {
       mount();
@@ -996,6 +1064,7 @@ async function streamChat(payload, live, signal) {
       }
     } catch (ignored) { /* 非 JSON 错误体 */ }
     live.fail(message, hint);
+    live.finish(false);   // 记进 state.messages（幂等），不然刷新后错误凭空消失
     return;
   }
   const reader = res.body.getReader();
@@ -1030,7 +1099,10 @@ function handleEvent(raw, live) {
 
   if (name === "start") {
     live.messageId = data.message_id;
-    if (data.speaker) live.speaker = data.speaker;
+    if (data.speaker) {
+      live.speaker = data.speaker;
+      live.updateSpeaker(data.speaker);
+    }
   } else if (name === "text") {
     live.text(data.t || "");
   } else if (name === "reasoning") {
@@ -1043,8 +1115,12 @@ function handleEvent(raw, live) {
   } else if (name === "meta") {
     live.attempts = data.attempts || [];
   } else if (name === "done") {
-    live.info = (data.model || "") + (data.elapsed_ms ? " · " + (data.elapsed_ms / 1000).toFixed(1) + "s" : "")
-      + (data.prompt_chars ? " · 提示词 " + data.prompt_chars + " 字" : "");
+    live.model = data.model || "";
+    live.elapsedMs = data.elapsed_ms || 0;
+    live.promptChars = data.prompt_chars || 0;
+    if (data.stopped) live.stopped = true;
+    live.info = (live.model || "") + (live.elapsedMs ? " · " + (live.elapsedMs / 1000).toFixed(1) + "s" : "")
+      + (live.promptChars ? " · 提示词 " + live.promptChars + " 字" : "");
     if (data.emotion) live.emotionSet(data.emotion);
     // 以服务端最终落库内容为准（流式尾巴上的空白可能被裁掉）
     if (typeof data.content === "string") live.setContent(data.content);
@@ -1415,6 +1491,8 @@ function bindStatic() {
       if (state.picker.tab === "web" && state.picker.q) doWebSearch(); else renderPicker();
     });
   }
+  qs("btn-new-messages").addEventListener("click", scrollBottom);
+  qs("messages").addEventListener("scroll", paintNewMessages);
   qs("side-q").addEventListener("input", (ev) => { state.sideQ = ev.target.value; renderSidebar(); });
   const input = qs("input");
   input.addEventListener("input", () => autosize(input));

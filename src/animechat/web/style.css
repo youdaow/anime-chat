@@ -252,6 +252,22 @@ button { cursor: pointer; border: 0; background: none; }
 [data-theme="dark"] .banner { background: rgba(90, 70, 20, .45); color: #ffdf9a; border-color: rgba(200, 160, 60, .4); }
 
 .messages { flex: 1; overflow: auto; padding: 18px 22px 10px; min-height: 0; scroll-behavior: smooth; }
+.new-messages {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 5;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+  background: rgba(0, 0, 0, .55);
+  color: #fff;
+  border: 0;
+  backdrop-filter: saturate(180%) blur(6px);
+  -webkit-backdrop-filter: saturate(180%) blur(6px);
+}
+.new-messages[hidden] { display: none; }
 /* 消息流铺满整个聊天区：角色贴最左、自己贴最右（以前锁 800px 居中，
    宽屏下两边各空一大条，气泡全挤在中间）。 */
 .thread { display: flex; flex-direction: column; gap: 10px; }
@@ -655,6 +671,7 @@ details.more > .field:last-child { margin-bottom: 12px; }
   .head-menu-btn { display: block; margin-left: auto; }
 
   .messages { padding: 12px 12px 6px; }
+  .new-messages { bottom: 10px; font-size: 12.5px; padding: 5px 12px; }
   /* 两边都有头像（34px 图 + 8px 间距）：光按百分比算会把气泡挤出容器，
      先扣掉头像占的那一条再谈宽度。 */
   .msg-body { max-width: min(88%, calc(100% - 46px)); }
@@ -684,6 +701,7 @@ details.more > .field:last-child { margin-bottom: 12px; }
   }
   .modal.wide { width: 100vw; }
   .modal-body { padding: 14px 14px calc(16px + env(safe-area-inset-bottom)); }
+  .new-messages { bottom: calc(10px + env(safe-area-inset-bottom)); }
   .modal h2 { font-size: 16px; }
   .modal h2 .x { font-size: 26px; width: 40px; height: 40px; margin: -8px -8px 0 auto; }
   .lightbox img { max-width: 96vw; max-height: 78vh; }
@@ -745,6 +763,12 @@ details.more > .field:last-child { margin-bottom: 12px; }
   .picker-head .close { font-size: 26px; padding: 0 10px; min-height: 34px; }
   .picker-emotions button { padding: 6px 11px; }
   .picker-foot button { padding: 8px 12px; }
+  /* 确保超窄屏也是抽屉，不是浮层 */
+  .picker {
+    position: relative; inset: auto; left: auto; right: auto; bottom: auto;
+    margin: 0 8px 8px; padding: 10px 10px 12px; border-radius: 14px;
+    max-height: 46vh; max-height: 46dvh; border: 1px solid var(--line-strong);
+  }
   .sticker-cell .cell-btn { width: 28px; height: 28px; font-size: 13px; }
 
   /* 抽屉里那些小控件（列表行的 ⋯、＋新建 / AI 生成 / 导入 / ＋群聊）原本是给
