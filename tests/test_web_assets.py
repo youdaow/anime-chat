@@ -256,7 +256,8 @@ def test_abort_keeps_partial_stream_as_stopped_message():
     assert "live.failed = true;" not in catch_fn[:abort_if], "AbortError 不能被预标记为失败"
     assert "live.failed = true;" in catch_fn and "live.fail(err.message);" in catch_fn, \
         "真实请求失败仍要进入失败分支"
-    assert "else live.finish(true);" in catch_fn, "主动停止要走正常收尾，保留已收到的正文/表情"
+    assert "live.stopped = true;" in catch_fn and "live.finish(true);" in catch_fn, \
+        '主动停止要把已收到的正文/表情固化为"已中断"消息'
 
 
 def test_new_message_button_tracks_scroll_and_narrow_chat_visibility():
@@ -294,3 +295,36 @@ def test_new_message_button_has_safe_area_on_narrow_screen():
     block = media_block(CSS, "@media (max-width: 900px)")
     assert ".new-messages { bottom: calc(10px + env(safe-area-inset-bottom));" in block, \
         "窄屏新消息按钮也要留安全区，避免被手势条或 picker 盖住"
+
+def test_viewport_locks_mobile_scaling():
+    assert 'name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no"' in HTML, \
+        "移动端 viewport 必须禁止缩放，避免手指捏合放大聊天页面"
+    assert "touch-action: pan-x pan-y;" in CSS, "消息区要允许滚动但禁止浏览器捏合缩放"
+
+
+def test_streaming_watchdog_and_visible_progress():
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    assert "async function streamChat(payload, live, signal, setStatus) {" in app, \
+        "streamChat 要接收进度回调"
+    assert "let watchdog = null;" in app and "armWatchdog();" in app, \
+        "发送请求后必须启动客户端 watchdog"
+    assert "let progressTimer = null;" in app and "clearTimers();" in app, \
+        "进度刷新不能重置真正的超时 deadline"
+    assert "if (signal && !signal.aborted) signal.abort();" in app, \
+        "watchdog 超时时才中断当前请求，避免误杀正常完成"
+    assert 'live.fail("等待超时（" + elapsed + "s）"' in app, \
+        "超时必须在聊天界面显示明确错误"
+    assert 't >= 30 ? "等待模型返回中（已等待 " + t + "s）…"' in app, \
+        "等待超过 30 秒要显示更明确的进度文案"
+    assert 'id="live-status"' in HTML, "HTML 要有流式请求状态槽"
+    assert 'streamStatusEl = el("div", { class: "stream-status", text: "正在输入…" });' in app, \
+        "每次发送都要创建可见等待状态"
+    assert "if (streamStatusEl && streamStatusEl.parentNode) streamStatusEl.remove();" in app, \
+        "流结束后要清理临时状态元素"
+    assert "statusSlot.hidden = false;" in app and "statusSlot.hidden = true;" in app, \
+        "等待状态槽要在发送时显示、结束时隐藏"
+    assert "streamStatusEl.hidden = false;" in app, "收到流式正文时状态槽仍要保持可见"
+    assert "if (!signal || signal.aborted) return;" in app, \
+        "watchdog 不能覆盖用户刚刚发起的主动停止"
+    assert 'if (err.name === "AbortError" && timedOut) return;' in app, \
+        "watchdog 触发的 AbortError 不能覆盖已经生成的超时错误"

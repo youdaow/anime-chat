@@ -728,6 +728,17 @@ async function send(opts) {
   // options.auto：群聊里让 AI 直接接上一句，本轮没有用户发言
   if (options.auto && !isGroup()) { toast("只有群聊才能让 AI 直接接话", "err"); return; }
   if (!options.regenerate && !options.auto && !text && !stickers.length) return;
+  let streamStatusEl = null;
+  const setStatus = (status) => {
+    if (!streamStatusEl) return;
+    if (status === "receiving") {
+      streamStatusEl.textContent = "正在输入…";
+      streamStatusEl.hidden = false;
+      return;
+    }
+    streamStatusEl.textContent = status === "done" || status === "failed" || status === "timeout" ? "" : status;
+    streamStatusEl.hidden = !status || status === "done" || status === "failed" || status === "timeout";
+  };
 
   // 用户自己的消息先本地落一屏，不等接口
   const wasNearBottom = isNearBottom(threadEl());
@@ -749,6 +760,11 @@ async function send(opts) {
     if (!qs("picker").hidden) togglePicker(false);
   }
   if (wasNearBottom) scrollBottom(); else paintNewMessages();
+  streamStatusEl = el("div", { class: "stream-status", text: "正在输入…" });
+  const statusSlot = qs("live-status");
+  clear(statusSlot);
+  statusSlot.hidden = false;
+  statusSlot.appendChild(streamStatusEl);
 
   // 这一轮点名让谁说；发完就交回给轮转，下一条自动换人
   const speaker = options.speaker || null;
@@ -765,7 +781,7 @@ async function send(opts) {
       content: (options.regenerate || options.auto) ? "" : text,
       stickers: (options.regenerate || options.auto) ? [] : stickers,
       regenerate: !!options.regenerate, auto: !!options.auto, speaker: speaker || "",
-    }, live, state.abort.signal);
+    }, live, state.abort.signal, setStatus);
   } catch (err) {
     if (err.name !== "AbortError") {
       live.failed = true;
@@ -773,7 +789,11 @@ async function send(opts) {
       live.finish(false);
     }
     // 主动停止不是失败：已收到的正文/表情仍是有效回复，要固化为“已中断”消息。
-    else live.finish(true);
+    else if (!live.failed) {
+      live.stopped = true;
+      setStatus && setStatus("已停止");
+      live.finish(true);
+    }
   } finally {
     state.streaming = false;
     state.abort = null;
@@ -788,6 +808,9 @@ async function send(opts) {
     // 只在用户还看着这个会话时刷新新消息按钮状态。
     if (!live.failed && state.convId === sentTo) paintNewMessages();
     renderGroupBar();
+    setStatus && setStatus(live.failed ? "failed" : (live.stopped ? "stopped" : "done"));
+    if (streamStatusEl && streamStatusEl.parentNode) streamStatusEl.remove();
+    statusSlot.hidden = true;
   }
 }
 
@@ -1054,48 +1077,98 @@ function createLiveBubble() {
   return live;
 }
 
-async function streamChat(payload, live, signal) {
-  const res = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    signal,
-  });
-  if (!res.ok) {
-    let message = "HTTP " + res.status;
-    let hint = "";
-    try {
-      const data = await res.json();
-      const err = data && data.error;
-      if (err) {
-        message = typeof err.message === "string" ? err.message : JSON.stringify(err);
-        hint = err.hint || "";
-      }
-    } catch (ignored) { /* 非 JSON 错误体 */ }
-    live.fail(message, hint);
-    live.finish(false);   // 记进 state.messages（幂等），不然刷新后错误凭空消失
-    return;
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buf = "";
-  while (true) {
-    const chunk = await reader.read();
-    if (chunk.done) break;
-    buf += decoder.decode(chunk.value, { stream: true });
-    let cut = buf.indexOf("\n\n");
-    while (cut >= 0) {
-      const rawEvent = buf.slice(0, cut);
-      buf = buf.slice(cut + 2);
-      handleEvent(rawEvent, live);
-      cut = buf.indexOf("\n\n");
+async function streamChat(payload, live, signal, setStatus) {
+  let watchdog = null;
+  let progressTimer = null;
+  let watchdogFired = false;
+  let timedOut = false;
+  const timeoutMs = Math.max(10, Number((state.settings && state.settings.llm_timeout) || 120) || 120) * 1000;
+  const startTime = Date.now();
+  const clearTimers = () => {
+    if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+    if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
+  };
+  const clearWatchdogOnly = () => { if (watchdog) { clearTimeout(watchdog); watchdog = null; } };
+  const armWatchdog = () => {
+    clearWatchdogOnly();
+    watchdog = setTimeout(() => {
+      watchdogFired = true;
+      if (!signal || signal.aborted) return;
+      timedOut = true;
+      if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      if (signal && !signal.aborted) signal.abort();
+      const msg = "等待回复超时（" + elapsed + "s）。请检查网络，或到设置里把超时调大。";
+      live.failed = true;
+      live.errorText = msg;
+      live.fail("等待超时（" + elapsed + "s）", msg);
+      live.finish(false);
+      setStatus && setStatus("timeout");
+    }, timeoutMs + 2000);
+  };
+  const scheduleStatus = () => {
+    if (watchdogFired || !setStatus) return;
+    if (progressTimer) clearTimeout(progressTimer);
+    progressTimer = setTimeout(() => {
+      const t = ((Date.now() - startTime) / 1000).toFixed(1);
+      setStatus(t >= 30 ? "等待模型返回中（已等待 " + t + "s）…" : t + "s");
+      scheduleStatus();
+    }, 1000);
+  };
+  armWatchdog();
+  scheduleStatus();
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+    if (!res.ok) {
+      let message = "HTTP " + res.status;
+      let hint = "";
+      try {
+        const data = await res.json();
+        const err = data && data.error;
+        if (err) {
+          message = typeof err.message === "string" ? err.message : JSON.stringify(err);
+          hint = err.hint || "";
+        }
+      } catch (ignored) { /* 非 JSON 错误体 */ }
+      live.fail(message, hint);
+      live.finish(false);   // 记进 state.messages（幂等），不然刷新后错误凭空消失
+      clearTimers();
+      setStatus && setStatus("failed");
+      return;
     }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buf = "";
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buf += decoder.decode(chunk.value, { stream: true });
+      let cut = buf.indexOf("\n\n");
+      while (cut >= 0) {
+        const rawEvent = buf.slice(0, cut);
+        buf = buf.slice(cut + 2);
+        handleEvent(rawEvent, live, setStatus);
+        cut = buf.indexOf("\n\n");
+      }
+    }
+    if (buf.trim()) handleEvent(buf, live, setStatus);
+    clearTimers();
+    setStatus && setStatus(live.failed ? "failed" : "done");
+    live.finish(false);
+  } catch (err) {
+    clearTimers();
+    // 超时分支已经生成失败消息；这里不能再把同一个 AbortError 当成用户主动停止。
+    if (err.name === "AbortError" && timedOut) return;
+    throw err;
   }
-  if (buf.trim()) handleEvent(buf, live);
-  live.finish(false);
 }
 
-function handleEvent(raw, live) {
+function handleEvent(raw, live, setStatus) {
   let name = "message";
   const dataLines = [];
   for (const line of raw.split("\n")) {
@@ -1113,10 +1186,13 @@ function handleEvent(raw, live) {
       live.updateSpeaker(data.speaker);
     }
   } else if (name === "text") {
+    setStatus && setStatus("receiving");
     live.text(data.t || "");
   } else if (name === "reasoning") {
+    setStatus && setStatus("receiving");
     live.think(data.t || "");
   } else if (name === "sticker") {
+    setStatus && setStatus("receiving");
     live.sticker(data);
     live.stickerObjects = (live.stickerObjects || []).concat([data]);
   } else if (name === "emotion") {
@@ -1136,6 +1212,7 @@ function handleEvent(raw, live) {
     playReceive();   // 回复落定了再响，中途失败/中断不吵你
     renderComposerHint();
   } else if (name === "error") {
+    setStatus && setStatus("error");
     live.fail(data.message || "未知错误", data.hint || "");
   }
 }

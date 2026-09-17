@@ -97,7 +97,7 @@ button { cursor: pointer; border: 0; background: none; }
    改由 :active 给真实的反馈（见文件末尾按悬停能力分的那一档）。 */
 * { -webkit-tap-highlight-color: transparent; }
 /* 聊天流 / 侧栏自己滚，滚到头别把整页带着一起弹（iOS 那个「拉出下一页」的橡皮筋）。 */
-.messages, .side-scroll, .picker-grid, .modal { overscroll-behavior: contain; }
+.messages, .side-scroll, .picker-grid, .modal { overscroll-behavior: contain; touch-action: pan-x pan-y; }
 :where(button, a, input, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -108,7 +108,7 @@ button { cursor: pointer; border: 0; background: none; }
 /* grid 项的默认 min-height:auto 会被内容撑破：会话一长，.main 就长成整页高度，
    body（overflow:hidden）被 focus 滚到底，侧栏整块滚出屏幕且用户滚不回来。
    行高必须锁死在 1fr，两个子列各自内部滚动。 */
-#app { display: grid; grid-template-columns: 302px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100vh; gap: 0; }
+#app { display: grid; grid-template-columns: 302px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100vh; gap: 0; touch-action: pan-x pan-y; }
 
 /* ------------------------------------------------------------------ 侧栏 */
 .sidebar {
@@ -448,6 +448,7 @@ button { cursor: pointer; border: 0; background: none; }
 .send:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 .send.stop { background: var(--danger); }
 .composer-hint { margin-top: 5px; font-size: 11px; color: var(--text-faint); min-height: 15px; }
+.stream-status { margin-top: 4px; font-size: 11px; color: var(--text-faint); min-height: 14px; text-align: center; }
 
 /* ------------------------------------------------------------------ 表情面板 */
 .picker {

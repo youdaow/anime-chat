@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <!-- viewport-fit=cover：不加这条，iOS Safari 的 env(safe-area-inset-*) 永远是 0，
      手机上的底部导航和发送键会被手势条压住（样式里靠它留白）。 -->
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
 <title>二次元聊天 AI · 会发表情包的那种</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🌸</text></svg>">
 <link rel="stylesheet" href="/web/style.css?v=3">
@@ -100,6 +100,7 @@
         <button id="btn-send" class="send" title="发送">发送</button>
       </div>
       <div class="composer-hint" id="composer-hint"></div>
+      <div class="stream-status" id="live-status" hidden></div>
     </footer>
     <div class="picker" id="picker" hidden>
       <div class="picker-head">
