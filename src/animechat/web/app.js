@@ -334,8 +334,10 @@ function selectCharacter(cid, opts) {
   const options = opts || {};
   state.charId = cid;
   // 滑入聊天交给 openConversation：那里才是真的有了会话内容   // 抽屉里挑完人就收起来，别让人再点一次遮罩
-  renderSidebar();
-  renderHead();
+  if (!options.openLatest) {
+    renderSidebar();
+    renderHead();
+  }
   if (options.openLatest) {
     // 点角色 = 想跟这个人单独聊。群聊里也有他，但绝不能让群聊抢走单聊：
     // 否则拉过群之后点角色只会反复打开那个群，1 对 1 再也进不去了。

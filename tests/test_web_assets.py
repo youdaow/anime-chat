@@ -214,6 +214,13 @@ def test_open_conversation_paints_new_messages_button():
     assert "paintNewMessages();" in fn, "开会话后要刷新新消息按钮状态"
 
 
+def test_select_character_avoids_redundant_rendering_when_open_latest():
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    fn = app[app.index("function selectCharacter("):app.index("function newConversation(")]
+    assert 'if (!options.openLatest) {' in fn and 'renderSidebar();' in fn and 'renderHead();' in fn, \
+        "openLatest=true 时应让 openConversation 统一负责渲染，避免重复重绘侧栏和头部"
+
+
 def test_near_bottom_threshold_uses_72px():
     app = (WEB / "app.js").read_text(encoding="utf-8")
     assert "function isNearBottom(box, threshold = 72)" in app, \
