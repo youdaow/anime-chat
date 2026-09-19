@@ -7,6 +7,7 @@ WAL + 外键级联删除，删会话不会留下孤儿消息。
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import threading
 import time
@@ -240,8 +241,18 @@ class Store:
                     if lbl:
                         marks.append("[sticker:" + lbl + "]")
                 body = (body + "\n" if body else "") + "\n".join(marks)
+            # created_at 理论上非空；但历史脏数据可能写成空串/非数字。这类时间戳
+            # 没有可信意义，绝不能转成 0.0 —— 那会让沉默情绪把这条当成「很久没回」
+            # 直接顶到最高档。解析不了就置 None，让沉默计算跳过这条消息。
+            try:
+                created = float(r["created_at"])
+            except (TypeError, ValueError, OverflowError):
+                created = None
+            if created is not None and not math.isfinite(created):
+                created = None
             out.append({"role": r["role"], "content": body,
-                            "speaker": (r["speaker"] if "speaker" in r.keys() else "") or ""})
+                            "speaker": (r["speaker"] if "speaker" in r.keys() else "") or "",
+                            "created_at": created})
         return out
 
     def update_message(self, mid: int, content: str) -> bool:
@@ -310,6 +321,15 @@ class Store:
         return {"conversations": conv, "messages": msg, "messages_with_sticker": sticker, "db": str(self.path)}
 
 
+def _finite_timestamp(value: object, default: float | None) -> float | None:
+    """读取历史时间戳；空值、NaN 和无穷值都按默认值处理。"""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return parsed if math.isfinite(parsed) else default
+
+
 def _conv(row: sqlite3.Row) -> Conversation:
     try:
         parts = json.loads(row["participants"] or "[]") if "participants" in row.keys() else []
@@ -318,8 +338,9 @@ def _conv(row: sqlite3.Row) -> Conversation:
     parts = [str(p) for p in parts if p] or [row['character_id']]
     return Conversation(
         id=int(row["id"]), character_id=row["character_id"], title=row["title"] or "",
-        pinned=bool(row["pinned"]), participants=parts, created_at=float(row["created_at"]),
-        updated_at=float(row["updated_at"]),
+        pinned=bool(row["pinned"]), participants=parts,
+        created_at=_finite_timestamp(row["created_at"], 0.0) or 0.0,
+        updated_at=_finite_timestamp(row["updated_at"], 0.0) or 0.0,
         message_count=int(row["n"] or 0), preview=(row["last"] or "")[:60], summary=row["summary"] or "",
         last_read_id=int(row["last_read_id"] or 0) if "last_read_id" in row.keys() else 0,
         # 没带 unread 子查询的调用方（极少）当作 0，别让 KeyError 冒出来
@@ -328,12 +349,15 @@ def _conv(row: sqlite3.Row) -> Conversation:
 
 
 def _msg(row: sqlite3.Row) -> Message:
+    # 老库 / 异常数据可能把 created_at 写成空串、NaN 或无穷值；展示层保留 None，
+    # 不把不可信时间戳伪装成 1970 年，也不让它影响沉默情绪计算。
+    created = _finite_timestamp(row["created_at"], None)
     return Message(
         id=int(row["id"]), conversation_id=int(row["conversation_id"]), role=row["role"],
         content=row["content"] or "", stickers=json.loads(row["stickers"] or "[]"),
         emotion=row["emotion"], meta=json.loads(row["meta"] or "{}"),
         speaker=(row["speaker"] if "speaker" in row.keys() else "") or "",
-        created_at=float(row["created_at"]),
+        created_at=created,
     )
 
 

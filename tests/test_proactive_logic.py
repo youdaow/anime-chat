@@ -4,7 +4,7 @@ import random
 from src.animechat.feishu import (
     proactive_interval, proactive_due, next_due_key, last_key, quota_key, day_key,
     read_float, read_int, idle_note,
-    proactive_enabled, proactive_target,
+    proactive_enabled, proactive_target, proactive_schedule_valid,
 )
 
 
@@ -73,6 +73,28 @@ def test_read_float_int():
     assert read_int("456") == 456
     assert read_int("456.7") == 456
     assert read_int("abc", 20) == 20
+
+
+def test_read_float_rejects_nan_inf():
+    assert read_float("nan") == 0.0
+    assert read_float("inf") == 0.0
+    assert read_float("-inf") == 0.0
+    assert read_int("nan") == 0
+    assert read_int("inf") == 0
+
+
+def test_schedule_requires_trustworthy_activity():
+    # A stale positive deadline is accepted only while both the deadline and
+    # the last activity timestamp are close to now.
+    assert not proactive_schedule_valid(1000, 900, 100, 1)
+    assert not proactive_schedule_valid(1000, 100, 100, 1)
+    assert not proactive_schedule_valid(1000, 900, 0, 1)
+    assert not proactive_schedule_valid(1000, 900, float("nan"), 1)
+    assert not proactive_schedule_valid(1000, 900, float("inf"), 1)
+    assert not proactive_schedule_valid(1000, 0, 100, 1)
+    assert proactive_schedule_valid(1000, 900, 800, 1)
+    assert proactive_schedule_valid(1000, 999, 999, 1)
+    assert proactive_schedule_valid(1000, 1000, 1000, 1)
 
 
 def test_idle_note():

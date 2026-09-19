@@ -101,10 +101,13 @@ class CharacterBook:
         chars.sort(key=lambda c: (not c.builtin, c.created_at))
         return chars
 
-    def get(self, cid: str) -> Character | None:
+    def get(self, cid: str, include_hidden: bool = False) -> Character | None:
         merged = dict(self._builtins())
         merged.update(self._user_chars())
-        return merged.get(cid)
+        char = merged.get(cid)
+        if char is None or include_hidden:
+            return char
+        return None if cid in self.disabled_ids() else char
 
     def exists(self, cid: str) -> bool:
         return self.get(cid) is not None

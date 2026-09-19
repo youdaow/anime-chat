@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from .emotion import match_words
 
@@ -57,6 +57,18 @@ class Character(BaseModel):
     boundaries: str = ""
     system_extra: str = ""  # 对应角色卡 system_prompt 的自定义补充
     post_history: str = ""  # 对应 post_history_instructions
+    # 角色单独需要更长记忆时覆盖全局 context_chars；None 表示沿用设置。
+    context_chars: int | None = None
+
+    @field_validator("context_chars")
+    @classmethod
+    def _valid_context_chars(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        value = int(value)
+        if value < 600:
+            raise ValueError("角色上下文至少 600 字")
+        return value
 
     builtin: bool = False
     source: str = "manual"  # builtin | json | png | manual
@@ -115,7 +127,7 @@ class Message(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
     # 群聊里这条是谁说的（角色 id）。单聊和用户消息留空，老数据也留空。
     speaker: str = ""
-    created_at: float = Field(default_factory=now)
+    created_at: float | None = Field(default_factory=now)
 
 
 class Conversation(BaseModel):

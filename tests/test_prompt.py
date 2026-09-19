@@ -1,5 +1,6 @@
 from animechat import prompt
 from animechat.config import Settings
+import pytest
 from animechat.models import Character, DialogTurn
 
 
@@ -9,6 +10,10 @@ class FakeLib:
             label = "傲娇"
             tags = ["才不是", "哼"]
             emotion = "tsundere"
+            created_at = 0.0
+            favorite = 0
+            uses = 0
+            id = "s0"
         return [S()]
 
 
@@ -69,3 +74,66 @@ def test_summary_and_post_history_are_injected():
 def test_empty_history_only_system_injects_summary():
     msgs = prompt.history_messages(char(), [], Settings(), summary="只有摘要")
     assert len(msgs) == 1 and "只有摘要" in msgs[0]["content"]
+
+
+@pytest.mark.parametrize("seconds, tier", [
+    (1799, "黏人试探"),
+    (1800, "转冷"),
+    (7199, "转冷"),
+    (7200, "轻微失控"),
+    (21599, "轻微失控"),
+    (21600, "偏执"),
+])
+def test_silence_tier_boundaries(seconds, tier):
+    assert prompt.silence_state(seconds)[0] == tier
+
+
+def test_character_context_budget_overrides_global_budget():
+    settings = Settings(context_chars=800)
+    c = char(context_chars=12000)
+    history = [{"role": "user", "content": "早" * 1000},
+               {"role": "assistant", "content": "早" * 1000},
+               {"role": "user", "content": "最新"}]
+    msgs = prompt.history_messages(c, history, settings)
+    assert len("".join(m["content"] for m in msgs)) > 2000
+
+
+def test_normal_reply_softens_long_silence_from_real_timestamps():
+    now = 1_700_000_000.0
+    history = [{"role": "user", "content": "旧消息", "created_at": now - 7200},
+               {"role": "assistant", "content": "旧回复", "created_at": now - 7199},
+               {"role": "user", "content": "刚回", "created_at": now}]
+    note = prompt.silence_note(prompt.silence_seconds(history, now=now))
+    assert "黏人试探" in note and "转冷" not in note
+    assert "刚回过你消息" in note
+
+
+def test_proactive_silence_escalates_from_real_timestamps():
+    now = 1_700_000_000.0
+    history = [{"role": "user", "content": "最后一条", "created_at": now - 7200}]
+    note = prompt.silence_note(prompt.silence_seconds(history, now=now))
+    assert "轻微失控" in note
+    assert "7200" not in note and "2.0 小时" in note
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), "nan", "inf", "-inf", "", None, "not-a-time"])
+def test_silence_timestamps_ignore_non_finite_user_messages(bad):
+    now = 1_700_000_000.0
+    history = [
+        {"role": "user", "content": "坏时间", "created_at": bad},
+        {"role": "user", "content": "可信时间", "created_at": now - 60},
+    ]
+    assert prompt.last_user_message_at(history) == now - 60
+    assert prompt.silence_seconds(history, now=now) == 60
+    assert "黏人试探" in prompt.silence_note(60)
+
+
+def test_silence_timestamps_select_latest_finite_user_message():
+    now = 1_700_000_000.0
+    history = [
+        {"role": "user", "content": "旧消息", "created_at": now - 7200},
+        {"role": "assistant", "content": "旧回复", "created_at": now - 1},
+        {"role": "user", "content": "新消息", "created_at": now - 30},
+    ]
+    assert prompt.last_user_message_at(history) == now - 30
+    assert prompt.silence_seconds(history, now=now) == 30

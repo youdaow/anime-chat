@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 import os
 import random
 import re
@@ -611,15 +612,22 @@ def quota_key(chat_id: str, ts: float) -> str:
 
 def read_float(raw: str, default: float = 0.0) -> float:
     try:
-        return float(raw)
-    except (TypeError, ValueError):
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
         return default
+    return value if math.isfinite(value) else default
 
 
 def read_int(raw: str, default: int = 0) -> int:
     try:
-        return int(float(raw))
-    except (TypeError, ValueError):
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(value):
+        return default
+    try:
+        return int(value)
+    except (OverflowError, ValueError):
         return default
 
 
@@ -649,6 +657,25 @@ def proactive_due(now: float, next_at: float, sent_today: int, daily_max: int) -
     if daily_max <= 0 or sent_today >= daily_max:
         return False
     return now >= next_at
+
+
+def proactive_schedule_valid(now: float, next_at: float, last_active: float,
+                             idle_min: int) -> bool:
+    """判断存档的到期点是否仍可信。
+
+    旧版本/迁移数据可能留下一个早已过期的正数 next_due。若直接按当前时间判
+    到期，升级后的首个扫描 tick 会向所有旧会话集中发消息；因此这类 stale
+    状态必须先续期到未来随机窗口。活动时间缺失、非有限或已过期时，
+    都不能把旧的正数到期点当成可信计划。
+    """
+    if (not math.isfinite(now) or not math.isfinite(next_at)
+            or not math.isfinite(last_active)):
+        return False
+    if next_at <= 0 or last_active <= 0:
+        return False
+    stale_window = 2 * proactive_interval(idle_min)
+    return next_at >= now - stale_window and last_active >= now - stale_window
+
 
 
 def idle_note(seconds: float) -> str:
@@ -994,17 +1021,6 @@ class Bridge:
             db = store()
             chars = book().list()
 
-            # 记一笔「这个会话刚才有真人活动」。放在命令分支之前：就算对方只发了个
-            # /角色，也算 ta 在线，不该被主动催。
-            # 同时当场抽一次「下次什么时候该主动」并存档：基准值的 0.5~2 倍。
-            # 骰子必须在这抽、只抽一次 —— 扫描时每个 tick 重抽的话，会话会飞速朝
-            # 最小值偏，随机就成了摆设。
-            now = time.time()
-            db.set_pref(last_key(chat_id), str(now))
-            db.set_pref(ctype_key(chat_id), chat_type)
-            db.set_pref(next_due_key(chat_id),
-                        str(now + proactive_interval(getattr(s, "feishu_idle_min", 120) or 120)))
-
             kind, arg = parse_command(text)
             cmd = canonical_command(kind)
             if cmd:
@@ -1031,7 +1047,7 @@ class Bridge:
                 return
 
             cid = bound_character(db, chat_id, s.feishu_character)
-            char = book().get(cid) if cid else None
+            char = book().get(cid, include_hidden=True) if cid else None
             if char is None:
                 if chars:
                     await self._send(
@@ -1040,6 +1056,18 @@ class Bridge:
                     await self._send("本机还没有角色。去 animechat 网页建一个角色，再来飞书找我。",
                                      chat_id, mid)
                 return
+
+            # 走到这里才确认是「真人说的、能处理、也绑定了角色」的回复路径 ——
+            # 命令错误、系统通知、空消息、没被 @ 的群消息、未绑定角色的会话，
+            # 都不能把主动发言的倒计时往后推。
+            # 同时当场抽一次「下次什么时候该主动」并存档：基准值的 0.5~2 倍。
+            # 骰子必须在这抽、只抽一次 —— 扫描时每个 tick 重抽的话，会话会飞速朝
+            # 最小值偏，随机就成了摆设。
+            now = time.time()
+            db.set_pref(last_key(chat_id), str(now))
+            db.set_pref(ctype_key(chat_id), chat_type)
+            db.set_pref(next_due_key(chat_id),
+                        str(now + proactive_interval(getattr(s, "feishu_idle_min", 120) or 120)))
 
             lock = self._locks.setdefault(chat_id, asyncio.Lock())
             if lock.locked():
@@ -1102,28 +1130,45 @@ class Bridge:
         next_at = read_float(db.get_pref(next_due_key(chat_id), ""))
         last_active = read_float(db.get_pref(last_key(chat_id), ""))
         sent_today = read_int(db.get_pref(quota_key(chat_id, now), ""), 0)
+        if not proactive_schedule_valid(now, next_at, last_active, idle_min):
+            # 没有可信的到期点，或历史正数到期点已经 stale 到远超一轮间隔；
+            # 直接按当前时间判到期会在首个 tick 里批量骚扰所有旧会话，
+            # 先平滑续期到未来随机窗口，把历史状态自然推进到下一轮。
+            db.set_pref(next_due_key(chat_id), str(now + proactive_interval(idle_min)))
+            return
         if not proactive_due(now, next_at, sent_today,
                              int(getattr(s, "feishu_daily_max", 10) or 0)):
             return
         cid = bound_character(db, chat_id, s.feishu_character)
-        char = book().get(cid) if cid else None
+        char = book().get(cid, include_hidden=True) if cid else None
         if char is None:
             return
         lock = self._locks.setdefault(chat_id, asyncio.Lock())
         if lock.locked():
-            return                                   # 正在处理对方消息，别插话
-        async with lock:
-            # 拿锁这几秒对方可能刚回了消息（会顺手把到期点推后）：再确认一次，
-            # 避免「刚回就被催」。
-            if read_float(db.get_pref(next_due_key(chat_id), "")) > next_at:
-                return
-            result = await self._chat(s, char, "", chat_id, "p2p", db,
-                                      proactive=True,
-                                      idle=idle_note(max(0.0, now - last_active)))
-            db.set_pref(quota_key(chat_id, now), str(sent_today + 1))
-            # 发完立刻重抽一次、把到期点推到下一轮，否则下个 tick 又满足会连发。
-            db.set_pref(next_due_key(chat_id), str(now + proactive_interval(idle_min)))
-        await self._deliver(result, chat_id, "", s, db)
+            return                                   # 正在处理对方消息，别插嘴
+        delivered = False
+        try:
+            async with lock:
+                # 拿锁这几秒对方可能刚回了消息（会顺手把到期点推后）：再确认一次，
+                # 避免「刚回就被催」。
+                if read_float(db.get_pref(next_due_key(chat_id), "")) > next_at:
+                    return
+                idle = idle_note(max(0.0, now - last_active)) if last_active > 0 else ""
+                result = await self._chat(s, char, "", chat_id, "p2p", db,
+                                          proactive=True, idle=idle)
+                # 只有生成完整且真正送达飞书才算一次主动发言；生成成功但投递失败不扣配额。
+                delivered = result.ok and await self._deliver(result, chat_id, "", s, db, allow_fallback=False)
+        finally:
+            # 无论生成或投递是否成功都推到下一轮，避免失败后每个 tick 重复打扰；
+            # 如果对方在生成期间回了消息，保留对方刚刷新的更晚到期点；否则从完成时刻重算。
+            completed_at = time.time()
+            current_due = read_float(db.get_pref(next_due_key(chat_id), ""))
+            if current_due <= next_at:
+                db.set_pref(next_due_key(chat_id), str(completed_at + proactive_interval(idle_min)))
+        if delivered:
+            # 长耗时生成可能跨过本地零点；配额按实际送达日期重新读取并计数。
+            sent_today = read_int(db.get_pref(quota_key(chat_id, time.time()), ""), 0)
+            db.set_pref(quota_key(chat_id, time.time()), str(sent_today + 1))
 
     # --------------------------------------------------------- 调本机聊天接口
     async def _chat(self, s: Any, char: Any, text: str, chat_id: str,
@@ -1202,7 +1247,7 @@ class Bridge:
             return ""
         from .characters import book
 
-        char = book().get(cid)
+        char = book().get(cid, include_hidden=True)
         return ("【" + str(getattr(char, "name", "")) + "】") if char else ""
 
     def _group_conv_id(self, db: Any, ids: list[str], chat_id: str) -> int:
@@ -1210,7 +1255,7 @@ class Bridge:
         按成员名单重建（participants 传全，别退化成单聊，否则 auto 会被判 400）。"""
         from .characters import book
 
-        anchor = book().get(ids[0]) or next((book().get(i) for i in ids if book().get(i)), None)
+        anchor = book().get(ids[0], include_hidden=True) or next((book().get(i, include_hidden=True) for i in ids if book().get(i, include_hidden=True)), None)
         if anchor is None:
             raise LookupError("群成员全没了")
         return self._conversation(db, anchor, chat_id, "p2p", ids)
@@ -1289,7 +1334,7 @@ class Bridge:
         for m in db.messages(conv_id):
             if m.role != "assistant" or not (m.meta or {}).get("greeting"):
                 continue
-            who = book().get(m.speaker)
+            who = book().get(m.speaker, include_hidden=True)
             tag = ("【" + str(getattr(who, "name", "")) + "】") if who else ""
             # 库里存的是 sticker id（["p02"]），_deliver 要的是带 url 的 dict 才能上传，
             # 这里补一次解析；解析不到的（比如远程图）跳过，只发文字。
@@ -1329,8 +1374,8 @@ class Bridge:
             last_active = read_float(db.get_pref(last_key(chat_id), ""))
             if not group_expired(now, last_active, GROUP_IDLE_TIMEOUT):
                 return False
-            names = "、".join(str(getattr(book().get(i), "name", "?"))
-                              for i in members if book().get(i))
+            names = "、".join(str(getattr(book().get(i, include_hidden=True), "name", "?"))
+                              for i in members if book().get(i, include_hidden=True))
             self._disband_group(db, chat_id)
             idle_min = int(getattr(s, "feishu_idle_min", 120) or 120)
             db.set_pref(next_due_key(chat_id), str(now + proactive_interval(idle_min)))
@@ -1347,7 +1392,7 @@ class Bridge:
             if len(members) >= 2:
                 from .characters import book
 
-                names = "、".join(str(getattr(book().get(i), "name", "?")) for i in members)
+                names = "、".join(str(getattr(book().get(i, include_hidden=True), "name", "?")) for i in members)
                 await self._send("现在是群聊：" + names +
                                  "。\n你说一句她们各接一句；`/群聊 自己聊` 让她们自己聊；"
                                  "`/群聊 名字 名字…` 换一批人；`/群聊 退` 散会。", chat_id, mid)
@@ -1382,7 +1427,7 @@ class Bridge:
                 return
             from .characters import book
 
-            ids = [i for i in members if book().get(i)]
+            ids = [i for i in members if book().get(i, include_hidden=True)]
             if len(ids) < 2:
                 await self._send("群里的角色本机删得只剩一个了，重新 `/群聊 名字 名字` 拉一个。",
                                  chat_id, mid)
@@ -1430,7 +1475,7 @@ class Bridge:
             return
         if cmd == "status":
             cid = bound_character(db, chat_id, s.feishu_character)
-            char = next((c for c in chars if getattr(c, "id", "") == cid), None)
+            char = book().get(cid, include_hidden=True) if cid else None
             up = int(time.time() - self.state.started_at)
             on = proactive_enabled(db, chat_id, s)
             if on:
@@ -1521,8 +1566,9 @@ class Bridge:
         换人必须换会话：同一条历史里混两个角色，模型会串戏。卡片回调和 /角色 名字
         两条路都走这里，别把这两行 set_pref 抄两遍。
         """
-        db.set_pref(bind_key(chat_id), getattr(char, "id", ""))
+        # 先清旧会话，再发布新绑定；等待绑定变更的调用方因此不会读到切换中间态。
         db.set_pref(conv_key(chat_id), "")
+        db.set_pref(bind_key(chat_id), getattr(char, "id", ""))
 
     # --------------------------------------------------------- 卡片回调
     def handle_card_action(self, data: Any) -> Any:
@@ -1568,7 +1614,7 @@ class Bridge:
             s = (self._load_settings or load_settings)()
             self.state.s = s
             chars = book().list()
-            current_char = book().get(current_char_id)
+            current_char = book().get(current_char_id, include_hidden=True)
             current_name = getattr(current_char, "name", "") if current_char else "未选择"
             
             # 构建新的卡片
@@ -1587,7 +1633,7 @@ class Bridge:
             s = (self._load_settings or load_settings)()
             self.state.s = s
             db = store()
-            char = book().get(char_id)
+            char = book().get(char_id, include_hidden=True)
             if char is None:
                 await self._send("那个角色本机已经没有了，`/角色` 重新选一个。", chat_id, "")
                 return
@@ -1606,32 +1652,47 @@ class Bridge:
 
     # --------------------------------------------------------- 投递
     async def _deliver(self, result: ChatResult, chat_id: str, mid: str,
-                       s: Any, db: Any, prefix: str = "") -> None:
+                       s: Any, db: Any, prefix: str = "", allow_fallback: bool = True) -> bool:
+        """投递一条聊天结果，返回是否真正把内容送到飞书。
+
+        ``allow_fallback=False`` 用于主动发言：模型失败时不拿“生成失败”提示冒充
+        角色发言，也不会把空结果包装成一条消息；普通对话仍保留原有兜底文案。
+        """
         if result.error and not result.text:
-            await self._send("生成失败了：" + result.error, chat_id, mid)
-            return
+            if not allow_fallback:
+                return False
+            return await self._send("生成失败了：" + result.error, chat_id, mid)
         if not result.text and not result.stickers:
-            await self._send("这条我没接住话，再说一次试试？", chat_id, mid)
-            return
+            if not allow_fallback:
+                return False
+            return await self._send("这条我没接住话，再说一次试试？", chat_id, mid)
 
         chunks = split_message(result.text)
         images: list[str] = []
         if wants_stickers(db, chat_id, s):
             for st in result.stickers:
-                key = await self._upload_image(st)
+                # 上传图片失败只丢图：单张图异常不能把整条文字回复也一起吞掉。
+                try:
+                    key = await self._upload_image(st)
+                except Exception as exc:
+                    print("[feishu] 表情上传异常：" + str(exc)[:200])
+                    continue
                 if key:
                     images.append(key)
 
         first = True
+        sent_any = False
         for chunk in chunks:
             # 群聊署名只贴第一条正文；分条是同一句话被长度切断，不该重复【谁说的】。
             body = (prefix + chunk) if (first and prefix) else chunk
             # 第一条挂在用户那条消息下（回复），后面的直接发 —— 全 reply 会套成一串
-            await self._send(body, chat_id, mid if first else "")
+            sent_any = (await self._send(body, chat_id, mid if first else "")) or sent_any
             first = False
         for key in images:
-            await self._send_image(key, chat_id, mid if first else "")
+            # 图文都发：图不碍着字，字也不碍着图 —— 任何一条成功都算真正送达过。
+            sent_any = (await self._send_image(key, chat_id, mid if first else "")) or sent_any
             first = False
+        return sent_any
 
     async def _upload_image(self, sticker: dict) -> str:
         """表情库里的图传到飞书换 image_key。失败只丢图，不连带丢整条回复。

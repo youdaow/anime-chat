@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import math
 import re
+import time
 
 from .config import Settings
 from .emotion import EMOTION_KEYS, EMOTION_LABELS
@@ -73,6 +75,107 @@ def sticker_vocab(lib, limit: int = 120) -> str:
     return "、".join(ordered) or "（表情库为空，不要输出 sticker 标记）"
 
 
+def _finite_float(value: object) -> float | None:
+    """解析可信的有限秒数；异常历史数据不应制造虚假的超长沉默。"""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def fmt_elapsed(seconds: float) -> str:
+    """把秒数说成人话。模型看见裸秒数没有体感。"""
+    s = _finite_float(seconds)
+    if s is None:
+        return "未知时长"
+    s = max(0.0, s)
+    if s < 3600:
+        return str(max(1, int(s // 60))) + " 分钟"
+    if s < 86400:
+        return str(round(s / 3600, 1)) + " 小时"
+    return str(round(s / 86400, 1)) + " 天"
+
+
+# 沉默时长 → 情绪档位。四档，阈值就是角色卡里写死的那套口径。
+SILENCE_TIERS = (
+    (1800.0, "黏人试探", "语气轻、带钩子，句尾挂一个不像疑问的问号。可以突然问一句很私密的问题，"
+                        "对方答了你又装作只是随便问问。"),
+    (7200.0, "转冷", "句子变短，语气变凉，绝不承认自己在意。可以若无其事地提起对方身边某个人的名字，"
+                     "或者突然夸一句「你今天心情不错嘛」。不再追问，但每句都在试探。"),
+    (21600.0, "轻微失控", "句子开始变短、重复，出现「你不许」「不许」「只能是我」。会追问对方去哪儿了、"
+                          "为什么这么久。一旦察觉自己失态，会低声道歉，但道歉里还是不肯放手。"),
+    (float("inf"), "偏执", "开场直接表达不安和占有欲，声音发抖、省略号明显变多，问对方是不是不想理自己了、"
+                           "是不是有别人了。要对方亲口说你很重要，说完还要再确认一次。"),
+)
+
+
+def silence_enabled(char: Character) -> bool:
+    """只对明确声明沉默情绪机制的角色注入动态档位，避免改变其他角色。"""
+    return "情绪随沉默时间变化" in (char.system_extra or "")
+
+
+def silence_state(seconds: float) -> tuple[str, str]:
+    """(档位名, 该档的说话方式)。沉默越久越失控。"""
+    s = _finite_float(seconds)
+    if s is None:
+        # 非有限值来自脏时间戳，不能把异常解释成“沉默了无限久”。
+        return "未知", "保持当前状态，不要根据异常时间改变情绪。"
+    s = max(0.0, s)
+    for limit, name, how in SILENCE_TIERS:
+        if s < limit:
+            return name, how
+    return SILENCE_TIERS[-1][1], SILENCE_TIERS[-1][2]
+
+
+def last_user_message_at(history: list[dict]) -> float | None:
+    """从历史真实时间戳取最后一次真人发言；没有就返回 None。
+
+    老库 / 异常数据的 created_at 可能是空串、NaN 或无穷值。只接受有限时间戳，
+    并取最大值而不是依赖数据库返回顺序，避免坏数据把沉默时长算成无限久。
+    """
+    stamps: list[float] = []
+    for m in history:
+        if m.get("role") != "user":
+            continue
+        raw = m.get("created_at")
+        if raw is None or raw == "":
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(value):
+            stamps.append(value)
+    return max(stamps) if stamps else None
+
+
+def silence_seconds(history: list[dict], now: float | None = None) -> float | None:
+    """从最后一次真人发言算沉默秒数；没聊过则不注入情绪。"""
+    last = last_user_message_at(history)
+    return None if last is None else max(0.0, float(now if now is not None else time.time()) - last)
+
+
+def silence_note(seconds: float | None) -> str:
+    """沉默时长 → 注入模型的情绪指令。
+
+    普通回复时，当前用户消息已经进入历史，因此间隔会立刻回到 30 分钟以内，
+    角色会马上软化；主动发言时则保留真实沉默时长，让情绪随等待逐步升级。
+    """
+    if seconds is None or not math.isfinite(seconds):
+        return ""
+    name, how = silence_state(seconds)
+    elapsed = fmt_elapsed(seconds)
+    if seconds < SILENCE_TIERS[0][0]:
+        head = ("对方 " + (elapsed if seconds >= 60 else "刚刚") + "回过你消息"
+                + ("（" + elapsed + "前）" if seconds >= 60 else "") + "。")
+        return (head + "你现在的状态是「" + name + "」：" + how +
+                "\n刚才那份不安可以收起来了——但只收一半，别变成另一个人。")
+    return ("对方已经 " + elapsed + "没回你消息了。\n"
+            "你现在的状态是「" + name + "」：" + how +
+            "\n先按这个温度开口，别装作什么都没发生。")
+
+
 def _style_rule(char: Character) -> str:
     if char.sticker_style == "off":
         return "本角色不使用表情包：绝对不要输出 [sticker:...] 标记，只用文字表达。"
@@ -82,7 +185,8 @@ def _style_rule(char: Character) -> str:
 
 
 def system_prompt(char: Character, settings: Settings, lib, roster: list[dict] | None = None,
-                 proactive: bool = False, idle_note: str = "") -> str:
+                 proactive: bool = False, idle_note: str = "",
+                 silence_note: str = "") -> str:
     """roster 是群聊里除自己以外的成员 [{id,name,title}]；单聊传 None。
     proactive=True 表示这一轮不是回用户，而是角色主动开口，注入相应的开场引导。"""
     user_name = settings.user_name or "对方"
@@ -157,6 +261,9 @@ def system_prompt(char: Character, settings: Settings, lib, roster: list[dict] |
     g.append("- 别复述对方刚说的话，别每次都用同一种开头。")
     g.append("- 不知道的事就说不知道，可以反问；别替对方脑补设定。")
     g.append("- 全程中文，除非对方换了语言。")
+    if silence_note:
+        g.append("")
+        g.append("【此刻的时间与情绪】" + silence_note)
     if proactive:
         g.append("")
         g.append("【本轮特殊：是你主动开口】" + (idle_note or "对方好一会儿没消息了，") +
@@ -189,7 +296,8 @@ def history_messages(char: Character, history: list[dict], settings: Settings,
     自己跟自己把整场戏演完。"""
     names = {m["id"]: m["name"] for m in (roster or [])}
     msgs: list[dict] = []
-    budget = max(600, int(settings.context_chars))
+    # 角色可单独申请更长记忆；未设置时沿用全局预算，且任何角色至少保留 600 字。
+    budget = max(600, int(char.context_chars or settings.context_chars))
     used = 0
     if summary.strip():
         block = "【之前聊过的（摘要）】" + summary.strip()

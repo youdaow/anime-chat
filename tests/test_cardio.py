@@ -33,6 +33,18 @@ def test_card_roundtrip_keeps_animechat_fields():
     assert back.boundaries == "不做人身攻击"
 
 
+def test_card_roundtrip_keeps_context_budget():
+    c = sample()
+    c.context_chars = 12000
+    card = cardio.to_card_v2(c)
+    assert card["data"]["extensions"]["animechat"]["context_chars"] == 12000
+    back = cardio.from_card(card, make_id=lambda name: "restored")
+    assert back.context_chars == 12000
+
+    card["data"]["extensions"]["animechat"]["context_chars"] = "6000"
+    assert cardio.from_card(card, make_id=lambda name: "restored").context_chars == 6000
+
+
 def test_v1_card_without_spec_is_accepted():
     v1 = {"name": "老卡", "description": "desc", "first_mes": "hi", "personality": "p"}
     char = cardio.from_card(v1, make_id=lambda name: "old")

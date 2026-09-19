@@ -595,7 +595,6 @@ def test_proactive_sends_without_replying_to_anyone():
         s = load_settings().model_copy(update={"feishu_proactive": True, "feishu_idle_min": 120})
         sink = []
         bridge, s = _bridge(server, sink, s)
-        # 手动铺一个「早就该主动」的会话状态（私聊、已绑定角色、到期点在过去）
         db.set_pref("feishu.bind.oc_p", "e2e")
         db.set_pref("feishu.ctype.oc_p", "p2p")
         db.set_pref("feishu.last.oc_p", str(time.time() - 3 * 3600))
@@ -608,9 +607,43 @@ def test_proactive_sends_without_replying_to_anyone():
         assert all(k == "create" for k, _, _ in sent), [k for k, _, _ in sent]
         assert all(not mid for _, _, mid in sent), "主动消息不该挂在谁下面"
         _assert_real_reply(sink)
-        # 发完必须扣配额 + 把到期点推到下一轮，否则下个 tick 会立刻连发
         assert db.get_pref("feishu.pq.oc_p." + time.strftime("%Y%m%d")) == "1"
         assert float(db.get_pref("feishu.next.oc_p")) > time.time()
+
+
+def test_proactive_partial_output_with_error_sends_nothing_and_does_not_count(monkeypatch):
+    """SSE 先吐出半句再报上游错误时，不能把半成品发给用户，也不能扣主动配额。"""
+    with _Server() as server:
+        _seed_character()
+        db = store()
+        s = load_settings().model_copy(update={"feishu_proactive": True, "feishu_idle_min": 120})
+        sink = []
+        bridge, s = _bridge(server, sink, s)
+        db.set_pref("feishu.bind.oc_partial", "e2e")
+        db.set_pref("feishu.ctype.oc_partial", "p2p")
+        db.set_pref("feishu.last.oc_partial", str(time.time() - 3 * 3600))
+        before = time.time()
+        db.set_pref("feishu.next.oc_partial", str(before - 60))
+        result = feishu.ChatResult()
+        result.text = "只说到一半"
+        result.error = "上游中断"
+        delivered = []
+
+        async def fake_chat(*args, **kwargs):
+            return result
+
+        async def fake_deliver(*args, **kwargs):
+            delivered.append(True)
+            return False
+
+        monkeypatch.setattr(bridge, "_chat", fake_chat)
+        monkeypatch.setattr(bridge, "_deliver", fake_deliver)
+        asyncio.run(bridge._maybe_proactive(db, s, "oc_partial", before))
+
+        assert sink == [], "带错误的部分输出不该被投递"
+        assert delivered == [], "失败结果不应进入主动投递"
+        assert db.get_pref("feishu.pq.oc_partial." + time.strftime("%Y%m%d"), "0") == "0"
+        assert float(db.get_pref("feishu.next.oc_partial")) > before
 
 
 def test_proactive_skips_quiet_group_and_overquota_chats():

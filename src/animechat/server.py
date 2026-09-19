@@ -92,6 +92,9 @@ def merge_character(base: Character, patch: dict) -> Character:
     """把前端传来的局部字段并进现有角色，未提供的字段保持不变。"""
     data = base.model_dump()
     for key, value in patch.items():
+        if key == "context_chars":
+            data[key] = value
+            continue
         if value is None or key in {"id", "builtin", "created_at"}:
             continue
         if key == "appearance" and isinstance(value, dict):
@@ -169,7 +172,8 @@ async def attach_avatar_from_web(char: Character, s: Settings,
 
 def build_messages(char: Character, settings: Settings, conv_id: int, summary: str = "",
                  speaker: str = "", roster: list[dict] | None = None,
-                 proactive: bool = False, idle_note: str = "") -> tuple[list[dict], int]:
+                 proactive: bool = False, idle_note: str = "",
+                 now: float | None = None) -> tuple[list[dict], int]:
     lib = library()
 
     def word(sid: str) -> str:
@@ -182,9 +186,13 @@ def build_messages(char: Character, settings: Settings, conv_id: int, summary: s
         return w if not re.search(r"[\[\]［］:：\n]", w) else sid
 
     history = store().history_for_prompt(conv_id, label_of=word)
+    silence = ""
+    if prompt.silence_enabled(char):
+        silence = prompt.silence_note(prompt.silence_seconds(history, now=now))
     msgs = [{"role": "system", "content": prompt.system_prompt(char, settings, lib, roster=roster,
                                                               proactive=proactive,
-                                                              idle_note=idle_note)}]
+                                                              idle_note=idle_note,
+                                                              silence_note=silence)}]
     msgs.extend(prompt.history_messages(char, history, settings, summary=summary,
                                       speaker=speaker, roster=roster))
     return msgs, sum(len(str(m.get("content", ""))) for m in msgs)
@@ -293,7 +301,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
 
     @app.get("/api/characters/{cid}")
     def character_one(cid: str) -> dict:
-        char = book().get(cid)
+        char = book().get(cid, include_hidden=True)
         if char is None:
             raise HTTPException(404, "角色不存在")
         return {"character": char.model_dump(),
@@ -314,7 +322,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
 
     @app.put("/api/characters/{cid}")
     def character_update(cid: str, payload: dict = Body(...)) -> dict:
-        base = book().get(cid)
+        base = book().get(cid, include_hidden=True)
         if base is None:
             raise HTTPException(404, "角色不存在")
         try:
@@ -347,7 +355,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
 
     @app.post("/api/characters/{cid}/avatar")
     def character_avatar(cid: str, appearance: dict = Body(...)) -> dict:
-        char = book().get(cid)
+        char = book().get(cid, include_hidden=True)
         if char is None:
             raise HTTPException(404, "角色不存在")
         try:
@@ -391,7 +399,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
     @app.post("/api/characters/{cid}/avatar-image")
     async def character_avatar_image(cid: str, request: Request, file: UploadFile = File(...)) -> dict:
         """用本地上传的图片当头像：覆盖程序生成的头像，替代旧图。"""
-        char = book().get(cid)
+        char = book().get(cid, include_hidden=True)
         if char is None:
             raise HTTPException(404, "角色不存在")
         payload, ext = await _read_upload(file)
@@ -408,7 +416,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
         为什么不自动取第一张：同名角色和同人图太多，自动挑经常张冠李戴，
         而头像恰恰是最容易被认出来「这不是她」的东西。所以让人扫一眼再点。
         """
-        char = book().get(cid)
+        char = book().get(cid, include_hidden=True)
         if char is None:
             raise HTTPException(404, "角色不存在")
         q = str((body or {}).get("q") or "").strip() or portrait_query(char)
@@ -425,7 +433,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
 
            先按居中存一版保证「一定有个头像」，再把原图交回前端弹取景框让人微调：
            搜回来的图大多不是正方形，居中经常把头顶裁掉，而头像恰恰是要认脸的。"""
-        char = book().get(cid)
+        char = book().get(cid, include_hidden=True)
         if char is None:
             raise HTTPException(404, "角色不存在")
         url = str((body or {}).get("image_url") or "").strip()
@@ -454,7 +462,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
 
            x / y / side 用的是「原图像素」坐标，由前端那个方形取景框换算过来。
            越界交给 set_avatar_from_web 钳回来，这里只挡非数字和 NaN。"""
-        char = book().get(cid)
+        char = book().get(cid, include_hidden=True)
         if char is None:
             raise HTTPException(404, "角色不存在")
         try:
@@ -598,7 +606,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
 
     @app.get("/api/characters/{cid}/export.json")
     def character_export_json(cid: str) -> Response:
-        char = book().get(cid)
+        char = book().get(cid, include_hidden=True)
         if char is None:
             raise HTTPException(404, "角色不存在")
         card = cardio.to_card_v2(char)
@@ -607,7 +615,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
 
     @app.get("/api/characters/{cid}/export.png")
     async def character_export_png(cid: str) -> Response:
-        char = book().get(cid)
+        char = book().get(cid, include_hidden=True)
         if char is None:
             raise HTTPException(404, "角色不存在")
         try:
@@ -628,7 +636,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
         if not ids:
             raise HTTPException(400, "至少得有一个聊天对象")
         for pid in ids:
-            if book().get(pid) is None:
+            if book().get(pid, include_hidden=True) is None:
                 raise HTTPException(404, "角色不存在：" + pid)
         db = store()
         conv = db.create_conversation(ids[0], payload.title, participants=ids)
@@ -636,7 +644,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
         out: dict[str, Any] = {"conversation": conv.model_dump()}
         # 单聊只有它自己；群聊让每个成员各自打一次招呼，一进来就有群的样子（不花 token）
         for pid in ids:
-            char = book().get(pid)
+            char = book().get(pid, include_hidden=True)
             greeting = (char.greeting or "").strip()
             if not greeting:
                 continue
@@ -660,7 +668,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
         conv = db.get_conversation(cid)
         if conv is None:
             raise HTTPException(404, "会话不存在")
-        char = book().get(conv.character_id)
+        char = book().get(conv.character_id, include_hidden=True)
         lib = library()
         messages = []
         for m in db.messages(cid, limit=limit):
@@ -709,7 +717,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
         conv = db.get_conversation(cid)
         if conv is None:
             raise HTTPException(404, "会话不存在")
-        char = book().get(conv.character_id)
+        char = book().get(conv.character_id, include_hidden=True)
         if char is None:
             raise HTTPException(404, "角色不存在")
         msgs, total = build_messages(char, s, cid, conv.summary)
@@ -724,7 +732,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
         conv = db.get_conversation(cid)
         if conv is None:
             raise HTTPException(404, "会话不存在")
-        char = book().get(conv.character_id)
+        char = book().get(conv.character_id, include_hidden=True)
         if char is None:
             raise HTTPException(404, "角色不存在")
         msgs = db.tail_transcript(cid, limit=200)
@@ -807,10 +815,10 @@ def create_app(settings_override: Settings | None = None) -> Any:
                 speaker_id = last_asst[-1].speaker
         if not speaker_id:
             speaker_id = next_speaker(participants, prior) if group else conv.character_id
-        char = book().get(speaker_id)
+        char = book().get(speaker_id, include_hidden=True)
         if char is None:
             raise HTTPException(404, "角色不存在（可能已被删除）")
-        roster = roster_of(book(), participants, exclude=speaker_id) if group else None
+        roster = roster_of(book(), participants, exclude=speaker_id, include_hidden=True) if group else None
         policy = effective_sticker_policy(char, s)
 
         attached: list[str] = []
@@ -841,7 +849,8 @@ def create_app(settings_override: Settings | None = None) -> Any:
         msgs, prompt_chars = build_messages(char, s, conv.id, fresh.summary if fresh else "",
                                             speaker=speaker_id, roster=roster,
                                             proactive=payload.proactive,
-                                            idle_note=payload.idle_note)
+                                            idle_note=payload.idle_note,
+                                            now=time.time())
         seed = (conv.id * 7919 + int(time.time())) % 999983
 
         async def stream() -> AsyncIterator[str]:
@@ -1264,13 +1273,13 @@ def _last_user_text(db, conv_id: int, speaker: str = "") -> str:
     return ""
 
 
-def roster_of(book, ids: list[str], exclude: str = "") -> list[dict]:
+def roster_of(book, ids: list[str], exclude: str = "", include_hidden: bool = False) -> list[dict]:
     """群聊提示词里的「其他人」名单。已被删掉的角色自动跳过，不会留个空位在提示词里。"""
     out: list[dict] = []
     for pid in ids:
         if pid == exclude:
             continue
-        c = book.get(pid)
+        c = book.get(pid, include_hidden=include_hidden)
         if c is not None:
             out.append({"id": pid, "name": c.name, "title": c.title})
     return out

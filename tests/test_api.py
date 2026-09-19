@@ -10,8 +10,9 @@ from PIL import Image
 
 from animechat import media
 from animechat.config import user_sticker_dir
-from animechat.server import create_app
+from animechat.server import create_app, merge_character
 from animechat.stickers import library
+from animechat.models import Character
 
 
 @pytest.fixture()
@@ -109,6 +110,13 @@ def test_regenerate_replaces_last_reply(client):
     assert after[-1]["id"] != before[-1]["id"]
 
 
+def test_character_context_can_be_reset_and_validated():
+    base = Character(id="c", name="测试", context_chars=12000)
+    assert merge_character(base, {"context_chars": None}).context_chars is None
+    with pytest.raises(ValueError):
+        Character(id="bad", name="测试", context_chars=599)
+
+
 def test_character_crud_and_card_import(client):
     made = client.post("/api/characters", json={"name": "卡皮巴拉", "personality": "淡定"}).json()["character"]
     assert made["builtin"] is False
@@ -161,6 +169,29 @@ def test_builtin_character_is_hidden_not_deleted(client):
     assert cid in [c["id"] for c in client.get("/api/characters?include_hidden=true").json()["characters"]]
     client.post("/api/characters/" + cid + "/restore")
     assert cid in [c["id"] for c in client.get("/api/characters").json()["characters"]]
+
+
+def test_hidden_character_can_join_group_and_speak(client):
+    hidden = "xingye-liuli"
+    visible = "baihe-qianxue"
+    assert client.delete("/api/characters/" + hidden).json()["how"] == "hidden"
+
+    created = client.post("/api/conversations", json={
+        "character_id": visible,
+        "participants": [hidden],
+        "title": "隐藏角色群聊",
+    })
+    assert created.status_code == 200, created.text
+    conv_id = created.json()["conversation"]["id"]
+    assert set(created.json()["conversation"]["participants"]) == {visible, hidden}
+
+    resp = client.post("/api/chat", json={
+        "conversation_id": conv_id,
+        "content": "你们都在吗？",
+        "speaker": hidden,
+    })
+    assert resp.status_code == 200, resp.text
+    assert "done" in [name for name, _ in sse_events(resp.text)]
 
 
 def test_sticker_endpoints(client):

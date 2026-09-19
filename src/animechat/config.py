@@ -116,6 +116,14 @@ class Settings(BaseModel):
     llm_thinking: Literal["off", "low", "on"] = "off"
     context_chars: int = 6000
 
+    @field_validator("context_chars")
+    @classmethod
+    def _valid_context_chars(cls, value: int) -> int:
+        value = int(value)
+        if value < 600:
+            raise ValueError("全局上下文至少 600 字")
+        return value
+
     # 表情包
     sticker_mode: Literal["off", "light", "rich"] = "rich"
     max_stickers_per_reply: int = 1

@@ -172,6 +172,7 @@ def to_card_v2(c: Character) -> dict:
         ("appearance", c.appearance.model_dump()),
         ("avatar", c.avatar),
         ("local_id", c.id),
+        ("context_chars", c.context_chars),
     ) if value}
     return {
         "spec": "chara_card_v2",
@@ -199,6 +200,17 @@ def _appearance_from(raw: dict) -> Appearance:
     known = set(Appearance.model_fields)
     clean = {k: v for k, v in raw.items() if k in known and isinstance(v, str)}
     return Appearance.model_validate(clean) if clean else Appearance()
+
+
+def _context_chars(raw) -> int | None:
+    """角色卡扩展字段可能是字符串；非法值回退为沿用全局设置。"""
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return max(600, value) if value > 0 else None
 
 
 def from_card(card: dict, *, make_id, source: str = "json", image: bytes | None = None) -> Character:
@@ -250,6 +262,7 @@ def from_card(card: dict, *, make_id, source: str = "json", image: bytes | None 
         boundaries=str(ext.get("boundaries") or body.get("creator_notes") or ""),
         system_extra=str(body.get("system_prompt") or ""),
         post_history=str(body.get("post_history_instructions") or ""),
+        context_chars=_context_chars(ext.get("context_chars")),
         builtin=False,
         source=source,  # type: ignore[arg-type]
         creator=str(body.get("creator") or ""),
