@@ -11,6 +11,7 @@ import math
 import sqlite3
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -298,6 +299,176 @@ class Store:
         with self._raw() as conn:
             conn.execute("INSERT INTO prefs(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                          (key, value))
+
+    def increment_pref(self, key: str, amount: int = 1, default: int = 0) -> int:
+        """原子地增加一个整数偏好；用于跨进程/跨线程的飞书日配额计数。"""
+        with self._raw() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT value FROM prefs WHERE key=?", (key,)).fetchone()
+            try:
+                current = int(float(row["value"])) if row and math.isfinite(float(row["value"])) else default
+            except (TypeError, ValueError, OverflowError):
+                current = default
+            value = current + int(amount)
+            conn.execute("INSERT INTO prefs(key,value) VALUES(?,?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+            return value
+
+    @staticmethod
+    def _pref_int(row, default: int = 0) -> int:
+        if not row:
+            return default
+        try:
+            value = float(row["value"])
+            if not math.isfinite(value):
+                return default
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+    @staticmethod
+    def _parse_proactive_claim(value: object) -> tuple[dict | None, float, str, str]:
+        """读取 lease；缺字段、非对象或非有限时间都视为不可证明。"""
+        try:
+            data = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None, 0.0, "reserved", ""
+        if not isinstance(data, dict) or "expires" not in data:
+            return None, 0.0, "reserved", ""
+        try:
+            expires = float(data.get("expires"))
+        except (TypeError, ValueError, OverflowError):
+            return None, 0.0, "reserved", ""
+        if not math.isfinite(expires):
+            return None, 0.0, "reserved", ""
+        state = data.get("state") or "reserved"
+        if state not in ("reserved", "committing"):
+            return None, 0.0, "reserved", ""
+        quota_key = data.get("quota_key")
+        token = data.get("token")
+        if not isinstance(quota_key, str) or not quota_key:
+            return None, 0.0, "reserved", ""
+        if not isinstance(token, str) or not token:
+            return None, 0.0, "reserved", ""
+        return data, expires, str(state), quota_key
+
+    @staticmethod
+    def _proactive_ttl(ttl: float) -> float:
+        try:
+            value = float(ttl)
+        except (TypeError, ValueError, OverflowError):
+            return 1.0
+        return value if math.isfinite(value) and value > 0 else 1.0
+
+    def claim_proactive(self, chat_id: str, quota_key: str, daily_max: int,
+                        ttl: float = 900.0) -> str | None:
+        """在同一事务里预留当日配额并取得会话 lease。
+
+        返回 ``None`` 表示目标日已满，或另一个桥接进程仍持有有效 lease。
+        lease 过期接管时，只撤销 ``reserved`` 状态下的旧预留；``committing``
+        表示消息已经发出，不能再把这次成功投递扣回，避免崩溃恢复时重复发言。
+        """
+        if daily_max <= 0:
+            return None
+        ttl = self._proactive_ttl(ttl)
+        claim_key = "feishu.proactive.claim." + str(chat_id or "")
+        now = time.time()
+        with self._raw() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            claim = conn.execute("SELECT value FROM prefs WHERE key=?", (claim_key,)).fetchone()
+            if claim:
+                data, expires, state, old_quota_key = self._parse_proactive_claim(claim["value"])
+                if data is not None and expires > now:
+                    return None
+                # 只有可证明属于旧 reserved 预留的配额才能回收。非对象、缺字段、
+                # 非有限时间等损坏记录无法证明归属，不能拿当前 quota 做回退。
+                if data is not None and state == "reserved" and old_quota_key:
+                    current = self._pref_int(
+                        conn.execute("SELECT value FROM prefs WHERE key=?", (old_quota_key,)).fetchone())
+                    if current > 0:
+                        conn.execute("UPDATE prefs SET value=? WHERE key=?",
+                                     (str(current - 1), old_quota_key))
+                conn.execute("DELETE FROM prefs WHERE key=?", (claim_key,))
+
+            current = self._pref_int(
+                conn.execute("SELECT value FROM prefs WHERE key=?", (quota_key,)).fetchone())
+            if current >= daily_max:
+                return None
+            conn.execute(
+                "INSERT INTO prefs(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (quota_key, str(current + 1)))
+            token = uuid.uuid4().hex
+            payload = json.dumps({
+                "token": token,
+                "expires": now + ttl,
+                "quota_key": quota_key,
+                "state": "reserved",
+            }, ensure_ascii=False)
+            conn.execute(
+                "INSERT INTO prefs(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (claim_key, payload))
+            return token
+
+    def renew_proactive(self, chat_id: str, token: str, ttl: float) -> bool:
+        """延长仍属于当前 token 且尚未过期的 reserved lease。"""
+        claim_key = "feishu.proactive.claim." + str(chat_id or "")
+        with self._raw() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT value FROM prefs WHERE key=?", (claim_key,)).fetchone()
+            if not row:
+                return False
+            data, expires, state, _old_quota_key = self._parse_proactive_claim(row["value"])
+            if data is None or state != "reserved" or expires <= time.time():
+                return False
+            if data.get("token") != token:
+                return False
+            ttl = self._proactive_ttl(ttl)
+            data["expires"] = time.time() + ttl
+            conn.execute("UPDATE prefs SET value=? WHERE key=?",
+                         (json.dumps(data, ensure_ascii=False), claim_key))
+            return True
+
+    def commit_proactive(self, chat_id: str, token: str) -> bool:
+        """成功发送后提交 lease；配额保留，lease 进入 committing 状态。
+
+        不立即删除 committing 记录：进程若在发送完成和提交之间崩溃，其他进程
+        也不能回收这次配额或再次发言。记录会在 lease 过期后被安全清理。
+        """
+        claim_key = "feishu.proactive.claim." + str(chat_id or "")
+        with self._raw() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT value FROM prefs WHERE key=?", (claim_key,)).fetchone()
+            if not row:
+                return False
+            data, _expires, state, _old_quota_key = self._parse_proactive_claim(row["value"])
+            if data is None or state != "reserved" or data.get("token") != token:
+                return False
+            data["state"] = "committing"
+            data["committed_at"] = time.time()
+            conn.execute("UPDATE prefs SET value=? WHERE key=?",
+                         (json.dumps(data, ensure_ascii=False), claim_key))
+            return True
+
+    def release_proactive(self, chat_id: str, token: str) -> bool:
+        """发送前失败或取消时，仅凭 token 幂等释放 quota + lease。"""
+        claim_key = "feishu.proactive.claim." + str(chat_id or "")
+        with self._raw() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT value FROM prefs WHERE key=?", (claim_key,)).fetchone()
+            if not row:
+                return False
+            data, _expires, state, quota_key = self._parse_proactive_claim(row["value"])
+            if data is None or state != "reserved" or data.get("token") != token:
+                return False
+            current = self._pref_int(
+                conn.execute("SELECT value FROM prefs WHERE key=?", (quota_key,)).fetchone())
+            if current > 0:
+                conn.execute("UPDATE prefs SET value=? WHERE key=?",
+                             (str(current - 1), quota_key))
+            conn.execute("DELETE FROM prefs WHERE key=?", (claim_key,))
+            return True
 
     def get_pref(self, key: str, default: str = "") -> str:
         with self._raw() as conn:

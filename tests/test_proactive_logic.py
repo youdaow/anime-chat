@@ -92,7 +92,7 @@ def test_schedule_requires_trustworthy_activity():
     assert not proactive_schedule_valid(1000, 900, float("nan"), 1)
     assert not proactive_schedule_valid(1000, 900, float("inf"), 1)
     assert not proactive_schedule_valid(1000, 0, 100, 1)
-    assert proactive_schedule_valid(1000, 900, 800, 1)
+    assert proactive_schedule_valid(1000, 900, 890, 1)
     assert proactive_schedule_valid(1000, 999, 999, 1)
     assert proactive_schedule_valid(1000, 1000, 1000, 1)
 

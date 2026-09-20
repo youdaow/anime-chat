@@ -150,6 +150,14 @@ def _seed_character():
     return char
 
 
+def _chat_result(text="", stickers=None, error=""):
+    result = feishu.ChatResult()
+    result.text = text
+    result.stickers = stickers or []
+    result.error = error
+    return result
+
+
 def _seed_group_characters():
     """两个能分名的角色，群聊用例专用。greeting 不同，才看得出招呼是不是各发各的。"""
     from animechat.models import Character
@@ -597,7 +605,7 @@ def test_proactive_sends_without_replying_to_anyone():
         bridge, s = _bridge(server, sink, s)
         db.set_pref("feishu.bind.oc_p", "e2e")
         db.set_pref("feishu.ctype.oc_p", "p2p")
-        db.set_pref("feishu.last.oc_p", str(time.time() - 3 * 3600))
+        db.set_pref("feishu.last.oc_p", str(time.time() - 300))
         db.set_pref("feishu.next.oc_p", str(time.time() - 60))
 
         asyncio.run(bridge._maybe_proactive(db, s, "oc_p", time.time()))
@@ -609,6 +617,179 @@ def test_proactive_sends_without_replying_to_anyone():
         _assert_real_reply(sink)
         assert db.get_pref("feishu.pq.oc_p." + time.strftime("%Y%m%d")) == "1"
         assert float(db.get_pref("feishu.next.oc_p")) > time.time()
+
+
+def test_stale_proactive_plan_is_rescheduled_without_delivery(monkeypatch):
+    """旧计划的到期点和活动时间都已过期：只续期，不能突然群发。"""
+    with _Server() as server:
+        _seed_character()
+        db = store()
+        s = load_settings().model_copy(update={"feishu_proactive": True, "feishu_idle_min": 120})
+        sink = []
+        bridge, s = _bridge(server, sink, s)
+        db.set_pref("feishu.bind.oc_stale", "e2e")
+        db.set_pref("feishu.ctype.oc_stale", "p2p")
+        before = time.time()
+        db.set_pref("feishu.last.oc_stale", str(before - 20000))
+        db.set_pref("feishu.next.oc_stale", str(before - 20000))
+        monkeypatch.setattr(feishu, "proactive_interval", lambda idle_min: 120)
+
+        asyncio.run(bridge._maybe_proactive(db, s, "oc_stale", before))
+
+        assert sink == [], "过期旧计划不该投递"
+        assert float(db.get_pref("feishu.next.oc_stale")) > before
+        assert db.get_pref("feishu.pq.oc_stale." + time.strftime("%Y%m%d"), "0") == "0"
+
+
+def test_proactive_generation_failure_does_not_consume_quota(monkeypatch):
+    """模型生成失败：不投递、不扣主动配额，但必须续期避免重试风暴。"""
+    with _Server() as server:
+        _seed_character()
+        db = store()
+        s = load_settings().model_copy(update={"feishu_proactive": True, "feishu_idle_min": 120})
+        sink = []
+        bridge, s = _bridge(server, sink, s)
+        db.set_pref("feishu.bind.oc_fail", "e2e")
+        db.set_pref("feishu.ctype.oc_fail", "p2p")
+        before = time.time()
+        db.set_pref("feishu.last.oc_fail", str(before - 300))
+        db.set_pref("feishu.next.oc_fail", str(before - 60))
+        result = feishu.ChatResult()
+        result.error = "上游失败"
+
+        async def fake_chat(*args, **kwargs):
+            return result
+
+        monkeypatch.setattr(bridge, "_chat", fake_chat)
+        asyncio.run(bridge._maybe_proactive(db, s, "oc_fail", before))
+
+        assert sink == []
+        assert db.get_pref("feishu.pq.oc_fail." + time.strftime("%Y%m%d"), "0") == "0"
+        assert float(db.get_pref("feishu.next.oc_fail")) > before
+
+
+def test_proactive_delivery_failure_does_not_consume_quota(monkeypatch):
+    """生成成功但飞书投递失败：不扣主动配额，下一轮再试。"""
+    with _Server() as server:
+        _seed_character()
+        db = store()
+        s = load_settings().model_copy(update={"feishu_proactive": True, "feishu_idle_min": 120})
+        sink = []
+        bridge, s = _bridge(server, sink, s)
+        db.set_pref("feishu.bind.oc_delivery_fail", "e2e")
+        db.set_pref("feishu.ctype.oc_delivery_fail", "p2p")
+        before = time.time()
+        db.set_pref("feishu.last.oc_delivery_fail", str(before - 300))
+        db.set_pref("feishu.next.oc_delivery_fail", str(before - 60))
+        result = _chat_result("生成成功")
+
+        async def fake_chat(*args, **kwargs):
+            return result
+
+        async def fake_deliver(*args, **kwargs):
+            return False
+
+        monkeypatch.setattr(bridge, "_chat", fake_chat)
+        monkeypatch.setattr(bridge, "_deliver", fake_deliver)
+        asyncio.run(bridge._maybe_proactive(db, s, "oc_delivery_fail", before))
+
+        assert sink == []
+        assert db.get_pref("feishu.pq.oc_delivery_fail." + time.strftime("%Y%m%d"), "0") == "0"
+        assert float(db.get_pref("feishu.next.oc_delivery_fail")) > before
+
+
+def test_proactive_success_counts_only_once_with_text_and_image(monkeypatch):
+    """一次主动发言即使有正文和多张图片，也只消耗一条日配额。"""
+    with _Server() as server:
+        _seed_character()
+        db = store()
+        s = load_settings().model_copy(update={"feishu_proactive": True, "feishu_idle_min": 120})
+        sink = []
+        bridge, s = _bridge(server, sink, s)
+        db.set_pref("feishu.bind.oc_once", "e2e")
+        db.set_pref("feishu.ctype.oc_once", "p2p")
+        before = time.time()
+        db.set_pref("feishu.last.oc_once", str(before - 300))
+        db.set_pref("feishu.next.oc_once", str(before - 60))
+        result = _chat_result(text="一条主动消息", stickers=[{"id": "a"}, {"id": "b"}])
+        calls = []
+
+        async def fake_chat(*args, **kwargs):
+            return result
+
+        async def fake_deliver(*args, **kwargs):
+            calls.append(args)
+            return True
+
+        monkeypatch.setattr(bridge, "_chat", fake_chat)
+        monkeypatch.setattr(bridge, "_deliver", fake_deliver)
+        asyncio.run(bridge._maybe_proactive(db, s, "oc_once", before))
+
+        assert len(calls) == 1
+        assert db.get_pref("feishu.pq.oc_once." + time.strftime("%Y%m%d")) == "1"
+
+
+def test_proactive_user_activity_during_generation_keeps_later_deadline(monkeypatch):
+    """生成期间用户回了消息：不能把对方刚刷新的 next_due 覆盖回旧计划。"""
+    with _Server() as server:
+        _seed_character()
+        db = store()
+        s = load_settings().model_copy(update={"feishu_proactive": True, "feishu_idle_min": 120})
+        sink = []
+        bridge, s = _bridge(server, sink, s)
+        db.set_pref("feishu.bind.oc_activity", "e2e")
+        db.set_pref("feishu.ctype.oc_activity", "p2p")
+        before = time.time()
+        db.set_pref("feishu.last.oc_activity", str(before - 300))
+        db.set_pref("feishu.next.oc_activity", str(before - 60))
+        result = _chat_result(text="刚生成完")
+
+        async def fake_chat(*args, **kwargs):
+            db.set_pref("feishu.last.oc_activity", str(before + 1800))
+            db.set_pref("feishu.next.oc_activity", str(before + 3600))
+            return result
+
+        async def fake_deliver(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr(bridge, "_chat", fake_chat)
+        monkeypatch.setattr(bridge, "_deliver", fake_deliver)
+        asyncio.run(bridge._maybe_proactive(db, s, "oc_activity", before))
+
+        assert float(db.get_pref("feishu.next.oc_activity")) == before + 3600
+        assert db.get_pref("feishu.pq.oc_activity." + time.strftime("%Y%m%d")) == "1"
+
+
+def test_proactive_quota_uses_delivery_day(monkeypatch):
+    """跨午夜时，即使生成开始于前一天，也只扣实际送达当天的配额。"""
+    with _Server() as server:
+        _seed_character()
+        db = store()
+        s = load_settings().model_copy(update={"feishu_proactive": True, "feishu_idle_min": 120})
+        sink = []
+        bridge, s = _bridge(server, sink, s)
+        db.set_pref("feishu.bind.oc_crossday", "e2e")
+        db.set_pref("feishu.ctype.oc_crossday", "p2p")
+        now = time.time()
+        previous_day = now - 86400
+        db.set_pref("feishu.last.oc_crossday", str(now - 300))
+        db.set_pref("feishu.next.oc_crossday", str(now - 60))
+        db.set_pref(feishu.quota_key("oc_crossday", previous_day), "10")
+        db.set_pref(feishu.quota_key("oc_crossday", now), "0")
+        result = _chat_result(text="跨天送达")
+
+        async def fake_chat(*args, **kwargs):
+            return result
+
+        async def fake_deliver(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr(bridge, "_chat", fake_chat)
+        monkeypatch.setattr(bridge, "_deliver", fake_deliver)
+        asyncio.run(bridge._maybe_proactive(db, s, "oc_crossday", now))
+
+        assert db.get_pref(feishu.quota_key("oc_crossday", previous_day)) == "10"
+        assert db.get_pref(feishu.quota_key("oc_crossday", now)) == "1"
 
 
 def test_proactive_partial_output_with_error_sends_nothing_and_does_not_count(monkeypatch):

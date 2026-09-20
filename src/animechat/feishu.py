@@ -673,7 +673,7 @@ def proactive_schedule_valid(now: float, next_at: float, last_active: float,
         return False
     if next_at <= 0 or last_active <= 0:
         return False
-    stale_window = 2 * proactive_interval(idle_min)
+    stale_window = 2.0 * max(1, int(idle_min)) * 60.0
     return next_at >= now - stale_window and last_active >= now - stale_window
 
 
@@ -1019,6 +1019,7 @@ class Bridge:
                 return
 
             db = store()
+            # 命令和卡片只展示当前公开角色；历史/绑定中的隐藏角色仍按 ID 解析。
             chars = book().list()
 
             kind, arg = parse_command(text)
@@ -1143,11 +1144,18 @@ class Bridge:
         char = book().get(cid, include_hidden=True) if cid else None
         if char is None:
             return
-        lock = self._locks.setdefault(chat_id, asyncio.Lock())
-        if lock.locked():
-            return                                   # 正在处理对方消息，别插嘴
+        daily_max = int(getattr(s, "feishu_daily_max", 10) or 0)
+        # 在生成前用 SQLite 事务同时完成「当日配额 + 会话 lease」预留。
+        # 这样多个扫描进程只能有一个进入生成；失败时按 token 幂等释放。
+        token = db.claim_proactive(
+            chat_id, quota_key(chat_id, now), daily_max,
+            ttl=max(900.0, float(getattr(s, "llm_timeout", 120)) + 60.0),
+        )
+        if token is None:
+            return
         delivered = False
         try:
+            lock = self._locks.setdefault(chat_id, asyncio.Lock())
             async with lock:
                 # 拿锁这几秒对方可能刚回了消息（会顺手把到期点推后）：再确认一次，
                 # 避免「刚回就被催」。
@@ -1156,19 +1164,23 @@ class Bridge:
                 idle = idle_note(max(0.0, now - last_active)) if last_active > 0 else ""
                 result = await self._chat(s, char, "", chat_id, "p2p", db,
                                           proactive=True, idle=idle)
-                # 只有生成完整且真正送达飞书才算一次主动发言；生成成功但投递失败不扣配额。
-                delivered = result.ok and await self._deliver(result, chat_id, "", s, db, allow_fallback=False)
+                if result.ok:
+                    delivered = await self._deliver(result, chat_id, "", s, db,
+                                                    allow_fallback=False)
+                    if delivered and db.commit_proactive(chat_id, token):
+                        delivered = True
+                else:
+                    db.release_proactive(chat_id, token)
         finally:
-            # 无论生成或投递是否成功都推到下一轮，避免失败后每个 tick 重复打扰；
+            # 生成、投递失败或任务被取消时，不能把失败算成一次主动发言。
+            if not delivered:
+                db.release_proactive(chat_id, token)
+            # 无论成功失败都推到下一轮，避免失败后每个 tick 重复打扰；
             # 如果对方在生成期间回了消息，保留对方刚刷新的更晚到期点；否则从完成时刻重算。
             completed_at = time.time()
             current_due = read_float(db.get_pref(next_due_key(chat_id), ""))
             if current_due <= next_at:
                 db.set_pref(next_due_key(chat_id), str(completed_at + proactive_interval(idle_min)))
-        if delivered:
-            # 长耗时生成可能跨过本地零点；配额按实际送达日期重新读取并计数。
-            sent_today = read_int(db.get_pref(quota_key(chat_id, time.time()), ""), 0)
-            db.set_pref(quota_key(chat_id, time.time()), str(sent_today + 1))
 
     # --------------------------------------------------------- 调本机聊天接口
     async def _chat(self, s: Any, char: Any, text: str, chat_id: str,
