@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from . import cardio, ghpack, llm, media, me, mock as mock_mod, persona, prompt, providers
+from . import cardio, feishu, ghpack, llm, media, me, mock as mock_mod, persona, prompt, providers
 from . import stickerdef, websearch
 from .characters import book
 from .config import DATA_DIR, PKG_DIR, Settings, ensure_dirs, load_settings, save_settings, settings_for_client
@@ -337,6 +337,13 @@ def create_app(settings_override: Settings | None = None) -> Any:
         ok, how = book().delete(cid)
         if not ok:
             raise HTTPException(404, "角色不存在")
+        db = store()
+        for chat_id, bound in list(feishu.list_bindings(db).items()):
+            if bound == cid:
+                db.set_pref(feishu.conv_key(chat_id), "")
+                db.set_pref(feishu.bind_key(chat_id), "")
+                db.set_pref(feishu.group_key(chat_id), "")
+                db.set_pref(feishu.mode_key(chat_id), "")
         return {"ok": True, "how": how, "note": "内置角色是隐藏（可恢复），自定义角色是删除文件"}
 
     @app.post("/api/characters/{cid}/duplicate")
@@ -675,8 +682,12 @@ def create_app(settings_override: Settings | None = None) -> Any:
             view = m.model_dump()
             view["sticker_objects"] = [_sticker_view(s) for s in (lib.get(x) for x in m.stickers) if s]
             messages.append(view)
+        participant_ids = conv.participants or [conv.character_id]
+        participant_characters = [book().get(pid, include_hidden=True).model_dump()
+                                  for pid in participant_ids if book().get(pid, include_hidden=True)]
         return {"conversation": conv.model_dump(), "messages": messages,
-                "character": char.model_dump() if char else None}
+                "character": char.model_dump() if char else None,
+                "participant_characters": participant_characters}
 
     @app.post("/api/conversations/{cid}/read")
     def conversation_read(cid: int) -> dict:
@@ -1259,6 +1270,9 @@ def _char_views(db, include_hidden: bool = False) -> list[dict]:
         view["conversation_count"] = counts.get(char.id, 0)
         view["unread_count"] = unread.get(char.id, 0)
         view["last_preview"] = last_seen.get(char.id, (0, ""))[1]
+        # 微信式会话列表一行要三样：最后一句、什么时候、几条没看。
+        # 时间单独给出去 —— 只留 last_preview 的话前端连「这个人聊过没有」都要猜。
+        view["last_at"] = last_seen.get(char.id, (0, ""))[0]
         out.append(view)
     return out
 

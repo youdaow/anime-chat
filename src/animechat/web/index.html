@@ -7,55 +7,38 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
 <title>二次元聊天 AI · 会发表情包的那种</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🌸</text></svg>">
-<link rel="stylesheet" href="/web/style.css?v=3">
+<link rel="stylesheet" href="/web/style.css?v=4">
 </head>
 <body>
-<div id="app">
-  <aside class="sidebar">
-    <!-- 品牌头部整个去掉：本地自用工具不需要自我介绍。收起侧栏的按钮挪到了底部导航，
-         不能放进 .side-search——窄屏媒体查询把这一行整个 display:none，按钮会被一起藏掉。 -->
-    <div class="side-search">
-      <input id="side-q" type="search" placeholder="搜索角色 / 会话" autocomplete="off">
+<!-- 三个页面 + 底部常驻选项卡：对话 / 联系人 / 我。桌面也这么摆，不再有左侧双栏。
+     以前窄屏走「推入式导航」、宽屏走双栏侧边栏，两套状态在 JS 里缠成一团
+     （isNarrow / show-chat / data-wide 互相踩）；换成选项卡后只剩一个判断：现在在哪一页。
+     聊天页沿用 .main 那套样式，另外两页复用侧栏的列表样式。 -->
+<div id="app" data-tab="chat">
+
+  <!-- ------------------------------------------------------------ 对话 -->
+  <!-- 微信式会话列表：一行一个人（头像 / 名字 / 最后一句 / 时间 / 未读）。
+       点一行才进聊天，聊天是推入页（#page-thread），不是选项卡。 -->
+  <main class="page page-chat on" id="page-chat">
+    <header class="page-head">
+      <h2>对话</h2>
+      <span class="side-tools">
+        <button id="btn-find-chat" title="挑一个人开聊">＋找人聊</button>
+      </span>
+    </header>
+    <div class="page-scroll">
+      <div id="chat-list" class="chat-list"></div>
+      <p class="page-note">一行一个人。点进去就是聊天，左上角 ← 回到这里。</p>
     </div>
+  </main>
 
-    <div class="side-scroll">
-      <section class="side-block">
-        <h2 class="side-title"><span>角色</span>
-          <span class="side-tools">
-            <button id="btn-new-char" title="新建角色">＋新建</button>
-            <button id="btn-ai-char" title="输入角色名和出处，AI 自动生成角色卡并添加">AI 生成</button>
-            <label class="file-btn" title="导入 JSON / PNG 角色卡">导入<input type="file" id="file-card" accept=".json,.png,.zip" hidden></label>
-          </span>
-        </h2>
-        <div id="char-list" class="char-list"></div>
-      </section>
-
-      <section class="side-block">
-        <h2 class="side-title"><span>会话</span><span class="side-tools">
-          <button id="btn-new-conv" title="和当前角色新开一轮">＋新会话</button>
-          <button id="btn-new-group" title="拉两个以上角色建群，让他们互相聊">＋群聊</button></span></h2>
-        <div id="conv-list" class="conv-list"></div>
-      </section>
-    </div>
-
-    <!-- 表情库入口挪进设置了；这里只留常驻功能 -->
-    <nav class="side-nav">
-      <button data-panel="settings" title="设置">设置</button>
-      <button data-panel="about" title="关于与自检">关于</button>
-      <button id="btn-theme" class="theme-btn" title="切换深浅色">☾</button>
-      <button id="btn-sfx" class="icon-btn" title="发送 / 收到消息的音效开关">🔊</button>
-      <button id="btn-collapse" class="icon-btn" title="收起 / 展开侧栏">«</button>
-    </nav>
-  </aside>
-
-  <main class="main" id="main">
-    <!-- 推入式导航（Telegram 手机版那种：窄屏先看到列表，点开会话后聊天区从右侧
-         滑入盖住列表，头部用 ← 退回列表）。返回键只在窄屏显示，放在 .chat-head 里
-         而不是 .main 里：chat-head 在没有会话时整个 hidden，但「正在加载 / 列表态」
-         时聊天区本来就该收起，所以放这里不会挡住进列表的门。 -->
-    <header class="chat-head" id="chat-head" hidden>
-      <button class="back-btn" id="btn-back" title="返回列表" aria-label="返回角色与会话列表">←</button>
-      <button class="avatar-btn" id="head-avatar" title="编辑角色"></button>
+  <!-- ------------------------------------------------ 聊天（推入页） -->
+  <!-- 盖住底部选项卡（grid-row: 1 / -1），跟微信一样：聊天时看不见 tab。 -->
+  <main class="main page push page-thread" id="page-thread" hidden>
+    <header class="chat-head" id="chat-head">
+      <button class="thread-back" id="btn-thread-back" title="回到对话列表" aria-label="回到对话列表">←</button>
+      <!-- 头像点进去是这个人的名片（微信聊天头部点名字/头像也是进资料页） -->
+      <button class="avatar-btn" id="head-avatar" title="看 TA 的名片"></button>
       <div class="head-info">
         <b id="head-name">—</b>
         <span id="head-title"></span>
@@ -64,7 +47,7 @@
       <div class="head-actions">
         <button id="btn-context" title="看看这次真正发给模型的内容">上下文</button>
         <button id="btn-compact" title="把较早的对话压缩成角色记忆">总结记忆</button>
-        <button id="btn-del-conv" title="删除当前会话">删除</button>
+        <button id="btn-del-conv" title="清空和 TA 的记录，从头再聊">从头再聊</button>
       </div>
       <!-- 手机上 .head-actions 那三个文字按钮排不进一行（360px 会横向溢出），
            换成一个 ⋯ 打开同样的动作；宽屏由样式 display:none 藏掉。 -->
@@ -119,6 +102,62 @@
       <div class="picker-foot" id="picker-foot"></div>
     </div>
   </main>
+
+  <!-- ------------------------------------------------ 名片（推入页） -->
+  <!-- 联系人点一个人先到这里（微信的通讯录就这样：先看名片，名片上按「发消息」）。
+       编辑 / 复制 / 导出 / 隐藏 / 删除也都在这一页，列表行里不再摆 ⋯。 -->
+  <main class="page push page-card" id="page-card" hidden>
+    <header class="chat-head">
+      <button class="thread-back" id="btn-card-back" title="回到联系人" aria-label="回到联系人">←</button>
+      <div class="head-info"><b>名片</b></div>
+    </header>
+    <div class="page-scroll card-body" id="card-body"></div>
+  </main>
+
+  <!-- ----------------------------------------------------------- 联系人 -->
+  <main class="page page-contacts" id="page-contacts" hidden>
+    <header class="page-head">
+      <h2>联系人</h2>
+      <span class="side-tools">
+        <button id="btn-new-char" title="新建角色">＋新建</button>
+        <button id="btn-ai-char" title="输入角色名和出处，AI 自动生成角色卡并添加">AI 生成</button>
+        <label class="file-btn" title="导入 JSON / PNG 角色卡">导入<input type="file" id="file-card" accept=".json,.png,.zip" hidden></label>
+      </span>
+    </header>
+    <div class="side-search">
+      <input id="side-q" type="search" placeholder="搜索角色" autocomplete="off">
+    </div>
+    <div class="page-scroll">
+      <div id="char-list" class="char-list"></div>
+      <p class="page-note">点一个人先看名片，名片上按「发消息」才开始聊；编辑 / 复制 / 导出 / 隐藏 / 删除也在名片上。</p>
+    </div>
+  </main>
+
+  <!-- --------------------------------------------------------------- 我 -->
+  <main class="page page-me" id="page-me" hidden>
+    <header class="page-head">
+      <h2>我</h2>
+      <span class="side-tools">
+        <button id="btn-theme" class="theme-btn" title="切换深浅色">☾</button>
+        <button id="btn-sfx" class="icon-btn" title="发送 / 收到消息的音效开关">🔊</button>
+      </span>
+    </header>
+    <div class="page-scroll">
+      <!-- 设置整块内嵌在这里，第一组就是「我是谁」（头像 / 名字 / 补充设定）。
+           以前它是「设置」弹窗，现在这一页就是设置。 -->
+      <section id="settings-host"><div class="loading">加载设置…</div></section>
+      <div class="row-actions">
+        <button id="btn-about" class="plain">关于与自检</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- ------------------------------------------------------------- 导航 -->
+  <nav class="tabbar" id="tabbar">
+    <button type="button" data-tab="chat" class="on">对话<span class="tab-badge" id="tab-unread" hidden></span></button>
+    <button type="button" data-tab="contacts">联系人</button>
+    <button type="button" data-tab="me">我</button>
+  </nav>
 </div>
 
 <div class="modal-root" id="modal-root" hidden>

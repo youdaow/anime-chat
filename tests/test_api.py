@@ -194,6 +194,47 @@ def test_hidden_character_can_join_group_and_speak(client):
     assert "done" in [name for name, _ in sse_events(resp.text)]
 
 
+def test_conversation_detail_carries_hidden_member_cards(client):
+    """会话详情要把成员的角色卡一起带回来：隐藏掉的角色不在公开角色列表里，
+       前端没有这份快照就画不出它的气泡名字和头像。
+       这里锁接口这一端，前端接线由 test_web_assets.py 的源码断言把住。"""
+    from animechat.store import store
+
+    hidden, visible = "xingye-liuli", "baihe-qianxue"
+    assert client.delete("/api/characters/" + hidden).json()["how"] == "hidden"
+    assert hidden not in [c["id"] for c in client.get("/api/characters").json()["characters"]]
+
+    conv_id = client.post("/api/conversations", json={
+        "character_id": visible, "participants": [hidden],
+    }).json()["conversation"]["id"]
+    detail = client.get("/api/conversations/" + str(conv_id)).json()
+
+    got = {c["id"]: c for c in detail["participant_characters"]}
+    assert set(got) == {visible, hidden}, "两个成员都得在，隐藏的那个不能被过滤掉：" + str(sorted(got))
+    assert got[hidden]["name"] and got[hidden]["avatar"]
+    assert store().get_conversation(conv_id).participants == [visible, hidden]
+
+
+def test_deleting_a_character_clears_its_feishu_bindings(client):
+    """删角色必须把飞书那边的绑定一起清掉。留着的话那个私聊下一次发消息会解析到
+       一个已经不存在的角色，桥接只会回一句「角色不存在」，而 /角色 列表里也换不回来。"""
+    from animechat import feishu
+    from animechat.store import store
+
+    cid = client.post("/api/characters", json={"name": "要删掉的角色"}).json()["character"]["id"]
+    db = store()
+    db.set_pref(feishu.bind_key("oc_demo"), cid)
+    db.set_pref(feishu.conv_key("oc_demo"), "42")
+    db.set_pref(feishu.mode_key("oc_demo"), "off")
+    db.set_pref(feishu.group_key("oc_demo"), '["a", "b"]')
+    assert feishu.list_bindings(db) == {"oc_demo": cid}
+
+    assert client.delete("/api/characters/" + cid).json()["how"] == "deleted"
+    assert feishu.list_bindings(db) == {}
+    for key in (feishu.conv_key("oc_demo"), feishu.mode_key("oc_demo"), feishu.group_key("oc_demo")):
+        assert db.get_pref(key) == "", "绑定键清了但 " + key + " 还留着"
+
+
 def test_sticker_endpoints(client):
     listing = client.get("/api/stickers").json()["stickers"]
     if listing:
@@ -259,6 +300,23 @@ def test_unread_counts_character_replies_only(client):
 
     client.post("/api/chat", json={"conversation_id": conv, "content": "再说一句"})
     assert _unread_of(client, conv) == 1, "新回复要重新点亮"
+
+
+def test_character_view_carries_chat_list_row_data(client):
+    """「对话」那一页是一行一个角色（微信式会话列表）：最后一句、什么时候、几条没看。
+       这三样都得后端给 —— 前端只拿得到角色卡，翻不动消息。"""
+    fresh = client.get("/api/characters").json()["characters"][0]
+    assert fresh["last_at"] == 0 and fresh["last_preview"] == "", "没聊过的人不该有时间戳和预览"
+
+    cid = fresh["id"]
+    conv = client.post("/api/conversations", json={"character_id": cid}).json()["conversation"]["id"]
+    client.post("/api/chat", json={"conversation_id": conv, "content": "讲句话"})
+
+    row = {c["id"]: c for c in client.get("/api/characters").json()["characters"]}[cid]
+    assert row["last_preview"], "聊过之后要有最后一句"
+    assert "[sticker" not in row["last_preview"], "发给模型的标记不能漏进列表预览"
+    assert row["last_at"] > 0, "要有时间戳，否则列表只能按创建顺序排，最近聊过的沉在下面"
+    assert row["unread_count"] >= 1, "未读条数跟着走"
 
 
 def test_mark_read_watermark_never_goes_backwards(client):

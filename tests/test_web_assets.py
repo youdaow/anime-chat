@@ -120,7 +120,7 @@ def test_app_uses_inner_scroll_not_page_scroll():
     assert "min-height: 0" in main and "overflow: hidden" in main, ".main 要能收缩并自锁：" + main.strip()
     msgs = block_of(".messages {")
     assert "overflow: auto" in msgs and "min-height: 0" in msgs, "#messages 才是唯一该滚动的区域：" + msgs.strip()
-    side = block_of(".side-scroll {")
+    side = block_of(".page-scroll {")
     assert "overflow: auto" in side and "min-height: 0" in side
     assert re.search(r"html \{[^}]*overflow: hidden", CSS), "html 也得禁滚动，focus 才滚不动页面"
 
@@ -148,41 +148,60 @@ def media_block(css: str, marker: str) -> str:
     return css[i:css.index("\n}", i) + 2]
 
 
-def test_narrow_screen_is_push_navigation():
-    """\u7a84\u5c4f(<900px)\u662f Telegram \u5f0f\u63a8\u5165\u5bfc\u822a\uff0c\u4e0d\u662f\u53cc\u680f\u5e76\u6392\u3001\u4e5f\u4e0d\u662f\u628a\u5165\u53e3\u6574\u6392\u85cf\u6389\u3002
+def test_three_pages_share_one_tabbar():
+    """桌面和手机是同一套 DOM：三个页面叠在一格，底部三个选项卡决定谁在屏幕上。
 
-    \u65e7\u5b9e\u73b0\u628a\u641c\u7d22\u6846\u3001\uff0b\u65b0\u5efa / AI \u751f\u6210 / \u5bfc\u5165\u3001\u89d2\u8272\u4e0e\u4f1a\u8bdd\u7684\u300c\u22ef\u300d\u83dc\u5355\u5168\u90e8 display:none\uff0c
-    \u89e6\u5c4f\u60ac\u505c\u4e0d\u51fa\u8fd9\u4e9b\u6309\u94ae\u2014\u2014\u7b49\u4e8e\u5728\u624b\u673a\u4e0a\u628a\u8fd9\u4e9b\u529f\u80fd\u6574\u4e2a\u5220\u4e86\u3002\u73b0\u5728\u7a84\u5c4f\u662f\u5355\u680f\uff1a
-    \u5217\u8868\u4e0e\u804a\u5929\u533a\u5404\u5360\u6ee1\u4e00\u5c4f\u53e0\u5728\u540c\u4e00\u683c\uff0c\u804a\u5929\u533a\u9ed8\u8ba4\u6ed1\u5230\u53f3\u4fa7\u5c4f\u5916\uff0c\u70b9\u4f1a\u8bdd\u6ed1\u5165\u3001\u5934\u90e8 \u2190 \u6ed1\u56de\uff0c
-    \u5217\u8868\u5c4f\u59cb\u7ec8\u5c31\u662f\u5b8c\u6574\u7248\uff08\u6240\u6709\u5165\u53e3\u90fd\u5728\uff09\u3002
-    """
+    以前窄屏(≤900px)要另走一套 Telegram 式推入导航（列表和聊天叠一格、聊天区
+    translateX 滑进滑出），宽屏走双栏侧边栏 + « 折叠，JS 里同时伺候 isNarrow /
+    .show-chat / data-wide 三套状态，互相踩出过「给 A 发消息、B 名字底下写着
+    正在输入中」那类 bug。这里锁两件事：① 那三套状态不许回来；
+    ② 窄屏仍然不许整排藏掉入口（触屏悬停不出按钮，藏了等于在手机上删功能）。"""
+    def block_of(selector):
+        i = CSS.index(selector)
+        return CSS[i:CSS.index("}", i)]
+    page = block_of(".page {")
+    assert "grid-column: 1" in page and "grid-row: 1" in page, "三个页面得叠在同一格：" + page.strip()
+    assert "min-height: 0" in page and "overflow: hidden" in page, "每页自锁，别把 #app 撑高：" + page.strip()
+    assert ".page[hidden] { display: none !important; }" in CSS, \
+        ".main / .page-head 自带 display，不 !important 压住，切页会变成三页同屏"
+    app = block_of("#app {")
+    assert "grid-template-rows: minmax(0, 1fr) auto" in app, "第二行给选项卡，且行高锁死：" + app.strip()
+
+    nav = re.search(r'<nav class="tabbar".*?</nav>', HTML, re.S)
+    assert nav, "index.html 里要有那个 .tabbar"
+    tabs = re.findall(r'data-tab="(chat|contacts|me)"', nav.group(0))
+    assert tabs == ["chat", "contacts", "me"], "底部必须正好是这三个选项卡，顺序也算：" + str(tabs)
+    for page_id in ("page-chat", "page-contacts", "page-me"):
+        assert 'id="%s"' % page_id in HTML, "缺页面容器：" + page_id
+
+    # 注释里允许提这些名字（那段历史正是这里要防着重演的原因），规则 / 标记里不许有
+    css_rules = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
+    html_tags = re.sub(r"<!--.*?-->", "", HTML, flags=re.S)
+    gone = ("show-chat", "translateX(100%)", "btn-back", "btn-collapse", "data-wide",
+            "back-btn", ".sidebar", ".side-nav", "data-panel=")
+    for word in gone:
+        assert word not in css_rules, "推入导航 / 折叠侧栏的残留回来了（CSS）：" + word
+        assert word not in html_tags, "推入导航 / 折叠侧栏的残留回来了（HTML）：" + word
+    js = (WEB / "app.js").read_text(encoding="utf-8")
+    for word in ("showChat", "hideChat", "isChatOpen", "btn-collapse"):
+        assert word not in js, "JS 里不该再有推入导航的状态：" + word
+
     block = media_block(CSS, "@media (max-width: 900px)")
-    for gone in (".side-search { display: none", ".ghost-only { display: none",
-                 ".side-nav { display: none", ".side-tools { display: none",
-                 ".char-meta { display: none", ".conv-meta { display: none"):
-        assert gone not in block, "\u7a84\u5c4f\u4e0d\u8bb8\u6574\u6392\u85cf\u6389\u5165\u53e3\uff08\u5217\u8868\u5c4f\u5c31\u662f\u5b8c\u6574\u7248\uff09\uff1a" + gone
-    assert "grid-column: 1" in block, "\u4fa7\u680f\u4e0e\u804a\u5929\u533a\u5f97\u53e0\u5728\u540c\u4e00\u683c\uff0c\u5426\u5219\u7a84\u5c4f\u8fd8\u662f\u53cc\u680f\uff1a" + block[:200]
-    assert "translateX(100%)" in block, "\u804a\u5929\u533a\u8981\u9ed8\u8ba4\u6ed1\u51fa\u53f3\u4fa7\u5c4f\u5916\uff0c\u624d\u80fd\u5148\u770b\u5230\u5217\u8868"
-    assert "#app.show-chat .main { transform: none" in block, "\u70b9\u5f00\u4f1a\u8bdd\u8981\u628a\u804a\u5929\u533a\u6ed1\u56de\u6765\u76d6\u4f4f\u5217\u8868"
-    assert "transition: transform" in block, "\u63a8\u5165 / \u6ed1\u51fa\u5f97\u6709\u8fc7\u6e21\uff0c\u786c\u5207\u770b\u8d77\u6765\u50cf\u574f\u4e86"
-    assert "#btn-collapse" in block, "\u7a84\u5c4f\u6ca1\u6709\u300c\u6536\u8d77 / \u5c55\u5f00\u300d\u8fd9\u56de\u4e8b\uff0c\u90a3\u4e2a\u6309\u94ae\u5f97\u85cf\u8d77\u6765\u522b\u5360\u4f4d"
-    assert "calc(100% - 46px)" in block, "\u7a84\u5c4f\u6c14\u6ce1\u5bbd\u5ea6\u8981\u6263\u6389\u5934\u50cf\u5360\u7684\u90a3\u4e00\u6761\uff1a" + block
-    assert "#app.show-chat .back-btn" in block, "\u8fd4\u56de\u952e\u53ea\u80fd\u5728\u804a\u5929\u6001\u51fa\u73b0\uff0c\u5217\u8868\u6001\u6ca1\u5f97\u9000"
-    app = (WEB / "app.js").read_text(encoding="utf-8")
-    assert "function showChat()" in app and "function hideChat()" in app, "\u63a8\u5165 / \u9000\u56de\u8981\u6709\u5355\u4e00\u5b9e\u73b0"
-    assert "showChat()" in app, "\u70b9\u5f00\u4f1a\u8bdd\u4e0d\u6ed1\u5165\u804a\u5929\uff0c\u7a84\u5c4f\u7b49\u4e8e\u70b9\u4e86\u6ca1\u53cd\u5e94"
-    assert 'id="btn-back"' in HTML and 'qs("btn-back")' in app, "\u8fd4\u56de\u952e\u5f97\u6709\u8282\u70b9\u4e5f\u6709\u63a5\u7ebf"
-    assert "rail-open" not in CSS and "rail-open" not in app, "\u62bd\u5c49\u65b9\u6848\u6b8b\u7559\uff1a\u540c\u4e00\u4e2a\u7a84\u5c4f\u4e0d\u80fd\u65e2\u662f\u62bd\u5c49\u53c8\u662f\u63a8\u5165"
-    for panel in ("settings", "about"):
-        assert 'data-panel="%s" title=' % panel in HTML, "\u5e95\u90e8\u5bfc\u822a\u6309\u94ae\u8981\u6709 title\uff1a" + panel
+    for hidden in (".side-search { display: none", ".ghost-only { display: none",
+                   ".page-head { display: none", ".side-tools { display: none",
+                   ".char-meta { display: none", ".tabbar { display: none"):
+        assert hidden not in block, "窄屏不许整排藏掉入口（列表屏就是完整版）：" + hidden
+    assert "calc(100% - 46px)" in block, "窄屏气泡宽度要扣掉头像占的那一条：" + block[:200]
+
 
 def test_narrow_screen_does_not_auto_open_keyboard():
     """openConversation 一进来就 focus 输入框：手机上软键盘立刻弹起，把刚打开的
-    历史整个遮住，用户看到的是「点开会话 → 一片空白 + 键盘」。"""
+    历史整个遮住，用户看到的是「点开会话 → 一片空白 + 键盘」。
+    加了选项卡之后多一条：人在「联系人」页翻列表时也不许抢焦点（会话是后台装载的）。"""
     app = (WEB / "app.js").read_text(encoding="utf-8")
     fn = app[app.index("async function openConversation("):app.index("/* 等回复时不往消息流塞气泡")]
-    assert "if (!isNarrow()) qs(\"input\").focus" in fn, \
-        "窄屏不能自动抢焦点弹键盘：" + fn[-400:]
+    assert 'if (!isNarrow() && state.page === "thread") qs("input").focus' in fn, \
+        "窄屏、以及没在聊天页时都不能自动抢焦点弹键盘：" + fn[-400:]
     # 桌面端仍然要抢焦点，那是效率不是 bug
     assert "qs(\"input\").focus({ preventScroll: true })" in fn, "宽屏的自动聚焦别一起删了"
 
@@ -217,8 +236,8 @@ def test_open_conversation_paints_new_messages_button():
 def test_select_character_avoids_redundant_rendering_when_open_latest():
     app = (WEB / "app.js").read_text(encoding="utf-8")
     fn = app[app.index("function selectCharacter("):app.index("function newConversation(")]
-    assert 'if (!options.openLatest) {' in fn and 'renderSidebar();' in fn and 'renderHead();' in fn, \
-        "openLatest=true 时应让 openConversation 统一负责渲染，避免重复重绘侧栏和头部"
+    assert 'if (!options.openLatest) {' in fn and 'renderContacts();' in fn and 'renderHead();' in fn, \
+        "openLatest=true 时应让 openConversation 统一负责渲染，避免重复重绘联系人列表和头部"
 
 
 def test_near_bottom_threshold_uses_72px():
@@ -260,15 +279,15 @@ def test_abort_keeps_partial_stream_as_stopped_message():
         '主动停止要把已收到的正文/表情固化为"已中断"消息'
 
 
-def test_new_message_button_tracks_scroll_and_narrow_chat_visibility():
+def test_new_message_button_tracks_scroll_and_page_visibility():
+    """「↓ 新消息」只在真的看着对话页时才提示。以前问的是「窄屏抽屉开没开」，
+    现在问「在哪一页」——在联系人页翻列表时到货，按钮不该隔着页面亮。"""
     app = (WEB / "app.js").read_text(encoding="utf-8")
     assert 'qs("messages").addEventListener("scroll", paintNewMessages);' in app, \
         "滚动消息流时要刷新新消息按钮"
-    assert "function chatVisible()" in app and "return !isNarrow() || isChatOpen();" in app, \
-        "窄屏抽屉关闭时不能显示新消息按钮"
-    block = media_block(CSS, "@media (max-width: 900px)")
-    assert ".main {\n    transform: translateX(100%)" in block, "窄屏聊天区默认要滑出屏幕"
-    assert "#app.show-chat .main { transform: none; }" in block, "窄屏打开聊天后才显示消息区"
+    assert 'function chatVisible() { return state.page === "thread"; }' in app, \
+        "聊天区可见性 = 现在停在聊天这一页（列表页 / 名片页上到货不该滚动、不该消红点）"
+    assert "chatVisible() && !isNearBottom(box)" in app, "按钮条件：不在底部 + 聊天区在屏幕上"
 
 
 def test_live_bubble_defers_speaker_to_start_event():
@@ -328,3 +347,97 @@ def test_streaming_watchdog_and_visible_progress():
         "watchdog 不能覆盖用户刚刚发起的主动停止"
     assert 'if (err.name === "AbortError" && timedOut) return;' in app, \
         "watchdog 触发的 AbortError 不能覆盖已经生成的超时错误"
+
+
+def test_group_bubbles_resolve_hidden_members():
+    """/api/conversations/{id} 会带回 participant_characters（含已隐藏的成员），
+       但接口给不等于前端在用：以前 setConvCharsLocal 定义了却没有任何调用点，
+       charById 于是只能查公开列表，隐藏角色说过的话画出来既没名字、头像还是个「角」字。
+       这两句断言就是那条断掉的线。"""
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    assert "setConvCharsLocal(data.participant_characters)" in app, \
+        "会话详情里的成员快照要真的写进 state，不然 participant_characters 白传"
+    opener = app[app.index("async function openConversation("):]
+    assert "setConvCharsLocal(" in opener[:opener.index("renderThread()")], \
+        "要在画会话之前写入，渲染时才有成员表可查"
+    byid = app[app.index("function charById("):]
+    byid = byid[:byid.index("\n}") + 2]
+    assert byid.index("state.characters") < byid.index("convCharsLocal"), \
+        "公开列表要排在成员快照之前：刚改过名字/头像的角色不能用旧快照画"
+
+
+def test_js_only_reaches_for_ids_that_exist():
+    """侧栏的会话整块删掉时，最容易漏的是 JS 里那句 qs("conv-list")：元素没了，
+       qs() 返回 null，于是 null.addEventListener 在 bindStatic() 里抛错 —— 整页白屏，
+       而且连 /api/bootstrap 都不会发（跟 panels.js 那次字符串换行是同一个结局）。
+       源码扫一遍 id 就能挡住，不用等浏览器。"""
+    ids = set(re.findall(r'id="([^"]+)"', HTML))
+    assert ids, "index.html 一个 id 都没解析出来，这个测试就白写了"
+    for name in ("app.js", "panels.js", "ui.js", "sfx.js"):
+        body = (WEB / name).read_text(encoding="utf-8")
+        used = set(re.findall(r'qs\(\s*["\x27]([A-Za-z0-9_-]+)["\x27]', body))
+        missing = sorted(used - ids)
+        assert not missing, name + " 里这些 qs() 指向不存在的元素：" + "、".join(missing)
+
+
+def test_chat_list_row_shows_preview_time_and_unread():
+    """「对话」页是微信式会话列表：一行一个人，副标题是最后一句，右上角是时间 + 红点。
+       关键是数据要从 state.conversations 现算，不能拿角色视图里那份 —— 那份要整页
+       bootstrap 才刷新，聊完一句回到列表还停在旧预览上，看着就像「它没回」。"""
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    assert 'id="chat-list"' in HTML, "对话页要有那个列表容器"
+    rows = app[app.index("function chatRows("):app.index("function renderChatList(")]
+    assert "for (const conv of state.conversations)" in rows, "预览/时间/未读都从会话表现算"
+    assert "convUnread(conv)" in rows and "conv.preview" in rows
+    assert "replace(/\\s+/g" in rows, "预览里的真实换行要压成一行，不然列表行被撑歪"
+    list_fn = app[app.index("function renderChatList("):app.index("function renderContacts(")]
+    assert "fmtAgo(" in list_fn, "没有时间列就不是微信那个形状"
+    assert "unread-count" in list_fn and "openThreadFor(" in list_fn, "点一行要进聊天"
+    # 首屏：initTabs() 跑的时候会话还没加载，只靠切页时画一次汇总红点，
+    # 会出现「行上亮着 2、选项卡写着 0」。bootstrap 落地后必须再刷一次。
+    boot = app[app.index("async function loadBootstrap("):app.index("async function loadConversations(")]
+    assert "renderChatList();" in boot and "paintTabBadge();" in boot, \
+        "bootstrap 拿到会话后要同时刷列表和汇总红点：" + boot
+
+
+def test_contacts_open_a_card_before_chatting():
+    """联系人 = 通讯录：点一个人先到名片，名片上按「发消息」才开始聊。
+       列表行里不再摆 ⋯ —— 一行两个入口，用户按半天不知道哪个是聊天。"""
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    contacts = app[app.index("function renderContacts("):app.index("/* 点人 → 进聊天")]
+    assert "openCard(char.id)" in contacts, "通讯录行要点开名片"
+    assert "openThreadFor(" not in contacts, "通讯录不该直接进聊天（那是名片上「发消息」的事）"
+    assert "ghost-only" not in contacts, "行里不该再有 ⋯：管理动作在名片上"
+    card = app[app.index("function renderCard("):app.index("function charName(")]
+    assert 'text: "发消息"' in card and "openThreadFor(char.id)" in card, "名片要有「发消息」进聊天"
+    assert "openCharMenu(char)" in card, "复制 / 导出 / 隐藏 / 删除收在名片的更多操作里"
+
+
+def test_pushed_pages_cover_the_tabbar():
+    """聊天和名片是推入页：占满整格、把底部选项卡盖住（微信聊天时看不见 tab）。
+    少了 grid-row: 1 / -1，推入页只占第一行，底下露出一条选项卡，看着像没全屏。"""
+    assert ".push { grid-row: 1 / -1;" in CSS, "推入页要跨两行盖住选项卡"
+    for pid in ("page-thread", "page-card"):
+        tag = re.search(r'<main[^>]*id="%s"[^>]*>' % pid, HTML)
+        assert tag, "缺推入页：" + pid
+        cls = re.search(r'class="([^"]*)"', tag.group(0))
+        assert cls and "push" in cls.group(1).split(), pid + " 少了 .push 类：" + (cls and cls.group(1))
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    assert 'qs("btn-thread-back").addEventListener("click", () => showPage("chat"));' in app, \
+        "聊天的 ← 要回对话列表"
+    assert 'qs("btn-card-back").addEventListener("click", () => showPage("contacts"));' in app, \
+        "名片的 ← 要回联系人"
+    stack = app[app.index("const PUSH_ROOT ="):app.index("function switchTab(")]
+    assert 'thread: "chat", card: "contacts"' in stack, "推入页要说清自己属于哪个栏，tab 才继续亮着"
+
+
+def test_picker_hint_matches_the_real_default_source():
+    """表情面板的空状态以前写「默认走 DuckDuckGo（无需 Key）。想更稳可以在设置里填 Tenor Key」，
+       两句都不成立：默认是 Bing（DuckDuckGo 只是退路，实测这台机器上常被风控），而设置里
+       Tenor/Giphy 那两格早拆了 —— 界面却在劝人去注册一个填了也没用的 Key。
+       这类藏在 app.js 里的用户可见文案，别的扫描都只读 panels.js，管不到它。"""
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    assert "默认走 Bing" in app, "搜图提示要说清真实默认来源"
+    for word in ("Tenor Key", "Giphy Key"):
+        assert word not in JS, "整个前端都不该再要这两个 Key：" + word
+    assert "默认走 DuckDuckGo" not in JS, "DuckDuckGo 是退路，不是默认"

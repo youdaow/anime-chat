@@ -4,10 +4,11 @@ import {
   el, append, clear, qs, toast, api, avatarNode, fmtTime, fmtAgo, lightbox,
   confirmDialog, openModal, closeModal, dismissModals, titleBar, spinner,
 } from "/web/ui.js";
-import { openCharEditor, openSettings, openStickerLibrary, openContext, openAbout, openAICreate } from "/web/panels.js";
+import { openCharEditor, renderSettings, openStickerLibrary, openContext, openAbout, openAICreate } from "/web/panels.js";
 import { playSend, playReceive, prime as primeSfx, isOn as sfxOn, setOn as sfxSet } from "/web/sfx.js";
 
 const state = {
+  page: "chat",       // 当前页面：chat / contacts / me 三个栏根页 + thread / card 两个推入页
   boot: null,
   characters: [],
   stickers: [],
@@ -31,6 +32,8 @@ const state = {
   speaker: null,
   autoing: false,
   picker: { tab: "all", q: "", emotion: "", web: [], loading: false, provider: "", note: "" },
+  // 当前会话成员的角色卡快照（含已隐藏的），由 openConversation 写入
+  convCharsLocal: null,
 };
 
 const ctx = {
@@ -46,21 +49,90 @@ const ctx = {
   openStickerLibrary,
 };
 
-/* ------------------------------------------------------- 窄屏 / 键盘适配 */
+/* ------------------------------------------------------- 页面 / 键盘适配 */
 
-/* 侧栏在 ≤900px 变成覆盖式抽屉（见 style.css 那条媒体查询）。判断一律走
-   matchMedia，别读 offsetWidth：抽屉收起时侧栏仍在 DOM 里，量出来的宽度会骗人。 */
+/* 窄屏仍然要用它做两件事：输入框提示语（触屏没有 Enter）、表情面板的展开方式。
+   布局本身不再分叉——三个选项卡在桌面和手机上是一样的。一律走 matchMedia，
+   别读 offsetWidth：抽屉收起时侧栏仍在 DOM 里，量出来的宽度会骗人。 */
 const narrowMq = window.matchMedia ? window.matchMedia("(max-width: 900px)") : null;
 function isNarrow() { return !!(narrowMq && narrowMq.matches); }
 
-function isChatOpen() { return document.getElementById("app").classList.contains("show-chat"); }
+/* 三个页面：对话 / 联系人 / 我。哪一页在屏幕上由 data-tab + hidden 决定，
+   样式只认这两样，所以这里只管把它们改对。 */
+const TABS = ["chat", "contacts", "me"];
+const TAB_STORE_KEY = "animechat.tab";
+/* 推入页：不属于任何选项卡，从哪个 tab 进来的，选项卡就还亮哪一个。
+   微信就这样——聊天全屏时底部 tab 根本看不见，← 回列表后 tab 才回来。 */
+const PUSH_ROOT = { thread: "chat", card: "contacts" };
 
-/* 切到聊天视图：窄屏下聊天区从右侧滑入盖住列表。只管类名，滑动交给 CSS transition。
-   宽屏两栏并排，这个类没有视觉作用，加着也无害。 */
-function showChat() { document.getElementById("app").classList.add("show-chat"); }
+function currentTab() { return PUSH_ROOT[state.page] || (TABS.indexOf(state.page) >= 0 ? state.page : "chat"); }
 
-/* 退回列表：聊天区滑回右侧屏外。← 返回键和 Esc 都走它。 */
-function hideChat() { document.getElementById("app").classList.remove("show-chat"); paintNewMessages(); }
+function showPage(name) {
+  state.page = name;
+  const app = document.getElementById("app");
+  if (app) app.dataset.page = name;
+  const tab = currentTab();
+  for (const btn of qs("tabbar").children) {
+    const on = btn.dataset.tab === tab;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-current", on ? "page" : "false");
+  }
+  for (const page of document.querySelectorAll(".page")) page.hidden = page.id !== "page-" + name;
+  paintTabBadge();
+  if (name === "thread") paintNewMessages();
+  if (name === "me") mountMePage();
+  if (name === "chat") renderChatList();
+}
+
+function switchTab(name) {
+  const tab = TABS.indexOf(name) >= 0 ? name : "chat";
+  try { window.localStorage.setItem(TAB_STORE_KEY, tab); } catch (err) { /* 无痕模式：记不住就算了 */ }
+  showPage(tab);   // 选项卡永远回到那一栏的根页：在聊天里点「对话」就是回列表
+}
+
+/* 「对话」上的红点 = 所有未读之和。列表行里每人还有一个自己的红点。 */
+function paintTabBadge() {
+  const badge = qs("tab-unread");
+  if (!badge) return;
+  let n = 0;
+  for (const conv of state.conversations) n += convUnread(conv);
+  badge.hidden = n <= 0;
+  badge.textContent = fmtUnread(n);
+}
+
+/* 绑选项卡 + 恢复上次那一栏。刷新前停在「我」页，刷新后还在「我」页——
+   不然每次调完设置刷新都被扔回列表。推入页不恢复：刷新就回栏根，符合微信的直觉。 */
+function initTabs() {
+  let saved = "chat";
+  try { saved = window.localStorage.getItem(TAB_STORE_KEY) || "chat"; } catch (err) { /* 读不到就用默认栏 */ }
+  showPage(TABS.indexOf(saved) >= 0 ? saved : "chat");
+  for (const btn of qs("tabbar").children) {
+    btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+  }
+  if (narrowMq) {
+    // 转屏 / 拖窗口过 900px：只有输入框提示语要跟着换
+    const onBreak = () => paintInputHint();
+    if (narrowMq.addEventListener) narrowMq.addEventListener("change", onBreak);
+    else if (narrowMq.addListener) narrowMq.addListener(onBreak);
+  }
+}
+
+/* 「我」页 = 我自己的人设 + 全部设置，内嵌在 #settings-host 里。
+   每次切到这一页重画一次：别的标签页刚改过的值、或保存后回回来的掩码 Key，
+   都不该留在旧格子里（以前是弹窗，每次打开本来就会重画，行为保持一致）。 */
+async function mountMePage() {
+  const host = qs("settings-host");
+  if (!host) return;
+  if (!state.settings) {
+    clear(host).appendChild(spinner("还在连本机服务…"));
+    return;
+  }
+  try {
+    await renderSettings(ctx, host);
+  } catch (err) {
+    clear(host).appendChild(el("p", { class: "tip", text: "设置没加载出来：" + err.message }));
+  }
+}
 
 /* 输入框提示语：手机上「Enter 发送 / Shift+Enter 换行」既打不出来、又把真正有用的
    提示挤到看不见（实测 390px 上「Shift+Enter 换行」被截成半行）。触屏上换行靠
@@ -72,17 +144,6 @@ function paintInputHint() {
   const input = qs("input");
   if (!input) return;
   input.placeholder = isNarrow() ? INPUT_HINT_NARROW : INPUT_HINT_WIDE;
-}
-
-function initNarrowNav() {
-  const back = qs("btn-back");
-  if (back) back.addEventListener("click", () => hideChat());
-  if (narrowMq) {
-    // 转屏 / 拖回宽屏：宽屏是并排双栏，聊天态残留没意义，退回列表；提示语跟着换
-    const onBreak = (ev) => { if (!ev.matches) hideChat(); paintInputHint(); };
-    if (narrowMq.addEventListener) narrowMq.addEventListener("change", onBreak);
-    else if (narrowMq.addListener) narrowMq.addListener(onBreak);
-  }
 }
 
 /* iOS Safari 的软键盘只压缩 visualViewport，#app 那 100dvh 一动不动，于是
@@ -116,7 +177,7 @@ function initKeyboardInset() {
 async function boot() {
   initTheme();
   bindStatic();
-  initNarrowNav();
+  initTabs();
   initKeyboardInset();
   paintInputHint();
   try {
@@ -137,10 +198,13 @@ async function boot() {
   const last = state.boot.prefs.last_character;
   const target = state.characters.find((c) => c.id === last) || state.characters[0];
   if (!target) {
-    toast("还没有角色，左侧「＋新建」或导入一张角色卡", "err");
+    toast("还没有角色，到「联系人」页「＋新建」或导入一张角色卡", "err");
+    switchTab("contacts");
     return;
   }
-  selectCharacter(target.id, { openLatest: !isNarrow() });   // 窄屏先停在会话列表，点进去才滑入聊天
+  // 只把上次那个人、最近那条会话装载好；停在用户上次看的那一页（initTabs 定的），
+  // 不该一开页面就把他从「我」页拽回聊天。
+  selectCharacter(target.id, { openLatest: true });
 }
 
 async function loadBootstrap() {
@@ -152,7 +216,11 @@ async function loadBootstrap() {
   state.settings = data.settings;
   state.conversations = data.conversations || [];
   renderBanner();
-  renderSidebar();
+  renderChatList();
+  // 汇总红点也要在这里刷一次：initTabs() 跑的时候还没有任何会话数据，
+  // 只靠切页时那一次画，首屏会出现「行上有 2、选项卡上写 0」。
+  paintTabBadge();
+  renderContacts();
   renderHead();
   return data;
 }
@@ -163,7 +231,9 @@ async function loadConversations() {
   /* 服务端算出来的未读里，也会把「你正开着的那个会话」里刚落地的那条回复算成未读
      （POST /read 可能还没跑到）。正看着的不该亮红点，所以这里再本地归零一次。 */
   if (state.convId && document.visibilityState === "visible") clearUnreadLocal(state.convId);
-  renderSidebar();
+  renderChatList();
+  renderContacts();
+  paintTabBadge();
 }
 
 async function loadStickers() {
@@ -189,16 +259,6 @@ function fmtUnread(n) {
   return v > 99 ? "99+" : String(v);   // 四位数会把行尾挤歪，手机上看也更像故障
 }
 
-/* 某个角色名下的未读总数。群聊摊到每个成员头上，和后端 _char_views 同一套算法：
-   手机上侧栏是抽屉、要点开才看得见，这个数字就是「谁有新回复」的唯一线索。 */
-function charUnread(cid) {
-  let n = 0;
-  for (const c of state.conversations) {
-    if (convIds(c).indexOf(cid) >= 0) n += convUnread(c);
-  }
-  return n;
-}
-
 // 只清本地状态、不发请求：渲染前先归零，红点才不会闪一下又消失
 function clearUnreadLocal(id) {
   const conv = state.conversations.find((c) => c.id === id);
@@ -212,7 +272,71 @@ function markRead(id) {
   api("/api/conversations/" + id + "/read", { method: "POST" }).catch(() => { /* 静默 */ });
 }
 
-function renderSidebar() {
+/* 每个角色一行的数据：最后一句、什么时候、几条没看。
+   算的是 state.conversations（发完消息会重拉），不是角色视图 —— 那份要整页
+   bootstrap 才刷新，聊完一句回到列表还停在旧预览上，看着像没收到回复。
+   群聊摊到每个成员头上，跟后端 _char_views 同一套口径。 */
+function chatRows() {
+  const seen = {};
+  const unread = {};
+  for (const conv of state.conversations) {
+    for (const pid of convIds(conv)) {
+      unread[pid] = (unread[pid] || 0) + convUnread(conv);
+      if (conv.updated_at && (!seen[pid] || conv.updated_at > seen[pid].at)) {
+        // 预览是消息原文，角色回的是多条时里面带真实换行；列表一行只有一行高，
+        // 换行不压掉会把整行撑歪。
+        seen[pid] = { at: conv.updated_at, text: String(conv.preview || "").replace(/\s+/g, " ").trim() };
+      }
+    }
+  }
+  return { seen, unread };
+}
+
+/* 「对话」= 微信式会话列表：一行一个人，副标题是最后一句，右上角是时间。
+   排序按最近聊过的在前；一句都没聊过的排在后面，按名字排（也是微信的直觉）。 */
+function renderChatList() {
+  const box = qs("chat-list");
+  if (!box) return;
+  const q = sideQuery();
+  const { seen, unread } = chatRows();
+  const lastOf = (char) => seen[char.id] || { at: char.last_at || 0, text: char.last_preview || "" };
+  const chars = state.characters
+    .filter((c) => matchesQuery(q, [c.name, c.title, (c.tags || []).join(" ")]))
+    .slice()
+    .sort((a, b) => lastOf(b).at - lastOf(a).at || String(a.name).localeCompare(String(b.name), "zh"));
+  clear(box);
+  if (!chars.length) {
+    box.appendChild(el("div", { class: "pill", text: q ? "没有匹配「" + q + "」的角色" : "还没有角色，到「联系人」页加一个" }));
+    return;
+  }
+  for (const char of chars) {
+    const n = unread[char.id] || 0;
+    const last = lastOf(char);
+    const chatted = !!last.at;
+    box.appendChild(el("div", {
+      class: "row" + (n ? " has-unread" : ""),
+      onclick: () => openThreadFor(char.id),
+      title: char.name + " — " + (char.title || ""),
+    }, [
+      avatarNode(char),
+      el("div", { class: "row-main" }, [
+        el("b", { text: char.name }),
+        el("span", { text: last.text || (chatted ? "[图片]" : "还没有聊过") }),
+      ]),
+      el("div", { class: "row-side" }, [
+        el("time", { text: chatted ? fmtAgo(last.at) : "" }),
+        n ? el("span", {
+          class: "unread-count", text: fmtUnread(n),
+          title: n + " 条未读回复", "aria-label": n + " 条未读回复",
+        }) : null,
+      ]),
+    ]));
+  }
+}
+
+/* 「联系人」= 通讯录：只有头像和名字，点一个人先看名片。
+   列表行不放 ⋯ —— 管理动作全在名片上，一行两个入口反而谁都找不到。 */
+function renderContacts() {
   const q = sideQuery();
   const chars = state.characters.filter((c) => matchesQuery(q, [c.name, c.title, c.short_desc, (c.tags || []).join(" ")]));
   const charList = clear(qs("char-list"));
@@ -220,64 +344,76 @@ function renderSidebar() {
     charList.appendChild(el("div", { class: "pill", text: q ? "没有匹配「" + q + "」的角色" : "还没有角色" }));
   }
   for (const char of chars) {
-    const unread = charUnread(char.id);
-    const item = el("div", {
-      class: "char-item" + (char.id === state.charId ? " on" : "") + (unread ? " has-unread" : ""),
-      onclick: () => selectCharacter(char.id, { openLatest: true }),
+    charList.appendChild(el("div", {
+      class: "row row-person" + (char.id === state.charId ? " on" : ""),
+      onclick: () => openCard(char.id),
       title: char.name + " — " + (char.title || ""),
     }, [
       avatarNode(char),
-      el("div", { class: "char-meta" }, [
-        el("b", { text: char.name }),
-        // 副标题显示「上次聊了什么」而不是角色介绍：列表一眼能回忆起对话进度。
-        // 没聊过的新角色留一句提示，不拿介绍去填。
-        el("span", { text: char.last_preview || "还没有聊过" }),
-      ]),
-      // 有未读就换成红色气泡显示条数，没有才显示灰色的会话数：一块地方，
-      // 优先说「有新东西」，其次才是「一共有几个会话」。
-      unread
-        ? el("div", { class: "unread-count", text: fmtUnread(unread), title: unread + " 条未读回复", "aria-label": unread + " 条未读回复" })
-        : el("div", { class: "pill", text: String(char.conversation_count || 0) }),
-      el("button", {
-        class: "ghost-only", text: "⋯", title: "角色菜单",
-        onclick: (ev) => { ev.stopPropagation(); openCharMenu(char); },
-      }),
-    ]);
-    charList.appendChild(item);
-  }
-
-  const convList = clear(qs("conv-list"));
-  // 群聊的 character_id 只是第一个成员；按参与者匹配，
-  // 否则拉了祥子和睦的群，点睦就看不到那个群了。
-  const mine = state.conversations.filter((c) => convIds(c).indexOf(state.charId) >= 0)
-    .filter((c) => matchesQuery(q, [c.title, convIds(c).map(charName).join(" ")]));
-  if (!mine.length) {
-    convList.appendChild(el("div", { class: "pill", text: q ? "没有匹配的会话" : "还没有会话，点上面「＋新会话」" }));
-  }
-  for (const conv of mine) {
-    const unread = convUnread(conv);
-    convList.appendChild(el("div", {
-      class: "conv-item" + (conv.id === state.convId ? " on" : "") + (unread ? " has-unread" : ""),
-      onclick: () => openConversation(conv.id),
-    }, [
-      el("div", { class: "conv-meta" }, [
-        el("b", { text: (conv.pinned ? "📌 " : "") + convLabel(conv) }),
-        el("span", { text: fmtAgo(conv.updated_at) + " · " + conv.message_count + " 条" + (conv.summary ? " · 有记忆" : "") }),
-      ]),
-      unread ? el("div", {
-        class: "unread-count", text: fmtUnread(unread),
-        title: unread + " 条未读回复", "aria-label": unread + " 条未读回复",
-      }) : null,
-      el("button", {
-        class: "ghost-only", text: "⋯", title: "会话菜单",
-        onclick: (ev) => { ev.stopPropagation(); openConvMenu(conv); },
-      }),
+      el("div", { class: "row-main" }, [el("b", { text: char.name })]),
     ]));
   }
 }
 
+/* 点人 → 进聊天。群聊里也有他，但绝不能让群聊抢走单聊：拉过群之后点人只会
+   反复打开那个群，1 对 1 就再也进不去了。 */
+async function openThreadFor(cid) {
+  state.charId = cid;
+  const mine = state.conversations.filter((c) => convIds(c).indexOf(cid) >= 0);
+  const solo = mine.filter((c) => convIds(c).length === 1);
+  if (solo.length) {
+    await openConversation(solo[0].id);
+    // openConversation 失败只 toast、不改 state.convId —— 那就别推一个空聊天上去
+    if (state.convId === solo[0].id) showPage("thread");
+    return;
+  }
+  const before = state.convId;
+  await newConversation(cid);
+  if (state.convId && state.convId !== before) showPage("thread");
+}
+
+function openCard(cid) {
+  const char = charById(cid);
+  if (!char) { toast("找不到这个角色", "err"); return; }
+  renderCard(char);
+  showPage("card");
+}
+
+/* 名片：微信点联系人看到的那一页。人设摊开给人看，底部一个绿色「发消息」。 */
+function renderCard(char) {
+  const box = clear(qs("card-body"));
+  const line = (label, value) => (value ? el("div", { class: "card-line" }, [
+    el("span", { class: "card-label", text: label }),
+    el("span", { class: "card-value", text: String(value) }),
+  ]) : null);
+  box.appendChild(el("div", { class: "card-head" }, [
+    avatarNode(char, "avatar card-avatar"),
+    el("b", { text: char.name }),
+    el("span", { class: "card-title", text: char.title || "" }),
+  ]));
+  box.appendChild(el("div", { class: "card-group" }, [
+    line("性格", char.personality),
+    line("说话方式", char.speaking_style),
+    line("口头禅", (char.catchphrases || []).join("、")),
+    line("喜欢", (char.likes || []).join("、")),
+    line("讨厌", (char.dislikes || []).join("、")),
+    line("底线", char.boundaries),
+    line("当前场景", char.scenario),
+    el("div", { class: "card-line" }, [
+      el("span", { class: "card-label", text: "语气示范" }),
+      el("span", { class: "card-value", text: (char.example_dialogs || []).length + " 组" }),
+    ]),
+    line("用图频率", ({ off: "不用表情包", light: "情绪到位才发", rich: "几乎每条都配一张" })[char.sticker_style] || ""),
+  ]));
+  box.appendChild(el("div", { class: "card-actions" }, [
+    el("button", { class: "primary card-send", text: "发消息", onclick: () => openThreadFor(char.id) }),
+    el("button", { class: "plain", text: "编辑人设 / 外观", onclick: () => openCharEditor(char, ctx) }),
+    el("button", { class: "plain", text: "更多操作（复制 / 导出 / 隐藏 / 删除）", onclick: () => openCharMenu(char) }),
+  ]));
+}
+
 function charName(id) {
-  const char = state.characters.find((c) => c.id === id);
+  const char = charById(id);
   return char ? char.name : id;
 }
 function currentChar() {
@@ -285,7 +421,16 @@ function currentChar() {
 }
 
 function charById(cid) {
-  return state.characters.find((c) => c.id === cid) || null;
+  // 先查公开列表：刚改过名字/头像要用最新的，成员表只是打开这条会话那一刻的快照。
+  const fresh = state.characters.find((c) => c.id === cid);
+  if (fresh) return fresh;
+  // 会话里可能有个已经隐藏的角色，它不在公开列表里；不查成员表的话
+  // 它的气泡就没名字、头像退成「角」字。
+  if (state.convCharsLocal && cid) {
+    const fromConv = state.convCharsLocal.find((c) => c.id === cid);
+    if (fromConv) return fromConv;
+  }
+  return null;
 }
 
 /* 会话里的角色：群聊 participants 有若干个，单聊就一个。
@@ -300,19 +445,18 @@ function convChars(conv) {
   return ids.map(charById).filter(Boolean);
 }
 
-// 会话在侧栏叫什么：群聊列出成员，单聊沿用原来的说法
-function convLabel(conv) {
-  if (conv.title) return conv.title;
-  const who = convIds(conv).map(charName);
-  return who.length > 1 ? who.join("、") : (who[0] || "新对话");
+function setConvCharsLocal(list) {
+  state.convCharsLocal = Array.isArray(list) ? list.slice() : null;
 }
 
+// 这条会话是群聊吗：参与者不止一个
 function isGroup() { return convChars().length > 1; }
 
 // 这条消息是谁发的：群聊看 speaker，单聊就是会话主角
 function speakerOf(msg) {
   if (msg.role === "user") return null;
-  return charById(msg.speaker) || currentChar();
+  if (msg.speaker) return charById(msg.speaker);
+  return currentChar();
 }
 
 /* 下一个该谁说话：跟服务端 next_speaker 同一套规则（看最后一条助手消息是谁，
@@ -333,19 +477,18 @@ function nextSpeakerId() {
 function selectCharacter(cid, opts) {
   const options = opts || {};
   state.charId = cid;
-  // 滑入聊天交给 openConversation：那里才是真的有了会话内容   // 抽屉里挑完人就收起来，别让人再点一次遮罩
   if (!options.openLatest) {
-    renderSidebar();
+    renderContacts();
     renderHead();
+    return;
   }
-  if (options.openLatest) {
-    // 点角色 = 想跟这个人单独聊。群聊里也有他，但绝不能让群聊抢走单聊：
-    // 否则拉过群之后点角色只会反复打开那个群，1 对 1 再也进不去了。
-    const mine = state.conversations.filter((c) => convIds(c).indexOf(cid) >= 0);
-    const solo = mine.filter((c) => convIds(c).length === 1);
-    if (solo.length) openConversation(solo[0].id);
-    else newConversation(cid);   // 没有单聊就新开一个，群聊留在下面的会话列表里
-  }
+  /* 点一个人 = 想跟这个人单独聊。群聊里也有他，但绝不能让群聊抢走单聊：
+     否则拉过群之后点角色只会反复打开那个群，1 对 1 再也进不去了。
+     切到对话页由点进来的那一方负责——boot 恢复上次会话时不该顺手改页。 */
+  const mine = state.conversations.filter((c) => convIds(c).indexOf(cid) >= 0);
+  const solo = mine.filter((c) => convIds(c).length === 1);
+  if (solo.length) openConversation(solo[0].id);
+  else newConversation(cid);   // 一句都没聊过，先给他建一条
 }
 
 async function newConversation(cid) {
@@ -367,6 +510,9 @@ async function openConversation(id) {
     state.convId = id;
     state.conversation = data.conversation;
     state.messages = data.messages || [];
+    // 成员卡片随会话一起回来：隐藏掉的角色不在公开角色列表里，
+    // 没有这份快照，它说过的话就画不出名字和头像。
+    setConvCharsLocal(data.participant_characters);
     // 群聊的 character_id 只是第一个成员；如果我是从某个角色的视角点进来的，
     // 就别把选中的人改成别人，否则侧栏高亮和"＋新会话"都会跳到群主身上。
     if (convIds(data.conversation).indexOf(state.charId) < 0) {
@@ -376,15 +522,14 @@ async function openConversation(id) {
     /* 会话画到屏幕上才算读到。标签页在后台时不清水位：切到后台那一刻到货的回复，
        正是红点要提示的东西，回到前台由 visibilitychange 补这次清零。 */
     if (document.visibilityState === "visible") markRead(id);
-    if (isNarrow()) showChat();
-    renderSidebar();
+    renderContacts();
     renderHead();
     renderThread();
     paintNewMessages();
     qs("composer").hidden = false;
-    /* 窄屏别抢焦点：一聚焦就弹软键盘，键盘把刚打开的历史整个遮住，
-       用户进来只看到一片空白。要打字他自己会点输入框。 */
-    if (!isNarrow()) qs("input").focus({ preventScroll: true });
+    /* 只有真的停在对话页才抢焦点：人在「联系人」页翻列表时，后台把上一条会话
+       装载好就够了，突然弹软键盘会把列表整个遮住。窄屏同理不抢。 */
+    if (!isNarrow() && state.page === "thread") qs("input").focus({ preventScroll: true });
   } catch (err) {
     toast(err.message, "err");
   }
@@ -450,7 +595,7 @@ function renderBanner() {
       el("b", { text: "当前是 Mock 模式：" }),
       document.createTextNode("回复由本机假生成，只用来验证流程与表情逻辑。接真模型：在设置 → 模型 的「接入方式」里挑一家平台（DeepSeek / 通义千问 / 智谱 / Kimi / OpenAI，地址已预置，只填 Key），或选「自定义 / 中转站」自己填 Base URL。"),
     ]));
-    notes.push(el("button", { class: "plain", text: "去设置", onclick: () => openSettings(ctx) }));
+    notes.push(el("button", { class: "plain", text: "去设置", onclick: () => switchTab("me") }));
   }
   if (s.env_overridden && s.env_overridden.length) {
     notes.push(el("span", { text: "注意：" + s.env_overridden.join("、") + " 被环境变量覆盖，界面上的改动不会生效。" }));
@@ -491,14 +636,14 @@ function renderThread() {
     const hasConv = !!state.convId;
     thread.appendChild(el("div", { class: "empty" }, [
       el("div", { class: "empty-art", text: hasConv ? "💬" : "🌸" }),
-      el("h3", { text: hasConv ? "说点什么吧" : "挑一个角色开始聊天" }),
+      el("h3", { text: hasConv ? "说点什么吧" : "还没开始聊" }),
       el("p", { text: hasConv
         ? "角色会按自己的性格回你，并在合适的时候甩表情包。"
-        : "左侧是角色列表。点开任意角色就能开一轮新对话；角色会按自己的性格决定什么时候给你甩表情包。" }),
+        : "回「对话」列表点一个人就开一轮；要先加角色就去「联系人」页。" }),
       el("button", {
         class: "primary",
-        text: hasConv ? "写第一条消息" : "开始一轮新对话",
-        onclick: () => { if (hasConv) { qs("input").focus({ preventScroll: true }); } else { newConversation(state.charId); } },
+        text: hasConv ? "写第一条消息" : "回对话列表挑人",
+        onclick: () => { if (hasConv) { qs("input").focus({ preventScroll: true }); } else { switchTab("chat"); } },
       }),
     ]));
   }
@@ -554,7 +699,7 @@ function messageNode(msg) {
   if (!me && msg.meta && msg.meta.stopped) meta.appendChild(el("span", { class: "chip", text: "已中断" }));
   if (errText) {
     meta.appendChild(el("button", { text: "重试", onclick: () => send({ regenerate: true }) }));
-    meta.appendChild(el("button", { text: "打开设置", onclick: () => openSettings(ctx) }));
+    meta.appendChild(el("button", { text: "打开设置", onclick: () => switchTab("me") }));
   }
   meta.appendChild(el("button", { text: "复制", onclick: () => {
     navigator.clipboard.writeText(text).then(() => toast("已复制"), () => toast("浏览器不让复制", "err"));
@@ -637,9 +782,9 @@ function isNearBottom(box, threshold = 72) {
   return box.scrollHeight - (box.scrollTop + box.clientHeight) <= threshold;
 }
 
-function chatVisible() {
-  return !isNarrow() || isChatOpen();
-}
+/* 聊天区在不在屏幕上：以前问的是「窄屏抽屉开没开」，现在就是「在哪一页」。
+   不在对话页时到货的消息不滚动、不消红点，只攒着，切回来再画。 */
+function chatVisible() { return state.page === "thread"; }
 
 function scrollBottom() {
   const box = qs("messages");
@@ -860,56 +1005,9 @@ async function aiAutoLoop(rounds) {
   renderGroupBar();
 }
 
-async function newGroupConversation() {
-  const chars = state.characters;
-  if (chars.length < 2) { toast("至少要两个角色才能建群聊", "err"); return; }
-  const picked = new Set(state.charId ? [state.charId] : []);
-  const list = el("div", { class: "pick-list" });
-  const hint = el("p", { class: "tip" });
-  const title = el("input", { type: "text", placeholder: "群名（可留空，默认用成员名字）" });
-  const ok = el("button", { class: "primary", text: "建群" });
-  const paint = () => {
-    hint.textContent = picked.size < 2
-      ? "再挑一个，至少两个才聊得起来（当前 " + picked.size + " 个）"
-      : "已选 " + picked.size + " 个人，会按这个顺序轮流发言";
-    ok.disabled = picked.size < 2;
-  };
-  for (const c of chars) {
-    const box = el("input", { type: "checkbox" });
-    box.checked = picked.has(c.id);
-    box.addEventListener("change", () => {
-      if (box.checked) picked.add(c.id); else picked.delete(c.id);
-      paint();
-    });
-    list.appendChild(el("label", { class: "pick-row" }, [
-      box, avatarNode(c, "avatar sm"),
-      el("span", { class: "pick-meta" }, [
-        el("b", { text: c.name }), el("span", { text: c.title || "" }),
-      ]),
-    ]));
-  }
-  ok.onclick = async () => {
-    const ids = Array.from(picked);
-    if (ids.length < 2) return;
-    try {
-      const data = await api("/api/conversations", { method: "POST", json: {
-        character_id: ids[0], participants: ids, title: title.value.trim(),
-      } });
-      closeModal();
-      await loadConversations();
-      state.charId = ids[0];
-      openConversation(data.conversation.id);
-      toast("群聊建好了，她们各自打了招呼");
-    } catch (err) { toast(err.message, "err"); }
-  };
-  openModal(el("div", {}, [
-    titleBar("拉个群", "让几个 AI 自己聊起来"),
-    el("p", { class: "sub", text: "选两个以上角色。她们轮流发言、也会互相接话；你随时插一句，说完还是接着轮。" }),
-    list, title, hint,
-    el("div", { class: "row-actions" }, [ok, el("button", { class: "plain", text: "取消", onclick: closeModal })]),
-  ]), { wide: true });
-  paint();
-}
+// 建群聊的入口随侧栏会话列表一起去掉了：群聊的代码还在（后端 participants、
+// 轮转、飞书那边的模拟群聊都照旧跑），只是网页上不再开这个口子。
+// 已有的群聊记录留在库里，飞书那边照常能聊。
 
 function regenerate() {
   if (!state.messages.length) return;
@@ -1071,7 +1169,7 @@ function createLiveBubble() {
       if (hint) bubble.appendChild(el("span", { class: "hint", text: hint }));
       clear(meta);
       meta.appendChild(el("button", { text: "重试", onclick: () => send({ regenerate: true }) }));
-      meta.appendChild(el("button", { text: "打开设置", onclick: () => openSettings(ctx) }));
+      meta.appendChild(el("button", { text: "打开设置", onclick: () => switchTab("me") }));
     },
   };
   return live;
@@ -1298,7 +1396,7 @@ async function renderWebPicker(grid) {
   if (!p.web.length) {
     grid.appendChild(el("div", { class: "picker-loading" }, [
       el("div", { text: "输入关键词后回车搜索（例如：傲娇 表情 / 柴田雪成 戳图）" }),
-      el("div", { text: p.note || "默认走 DuckDuckGo（无需 Key）。想更稳可以在设置里填 Tenor Key。" }),
+      el("div", { text: p.note || "默认走 Bing 图片（免 Key，不用注册），它没结果时自动退到 DuckDuckGo。" }),
     ]));
     return;
   }
@@ -1423,12 +1521,15 @@ function renderComposerHint() {
 
 /* ---------------------------------------------------------------- 菜单与静态绑定 */
 
+
 function openCharMenu(char) {
   const rows = el("div", { class: "row-actions", style: "flex-direction:column;align-items:stretch" });
   const mk = (label, fn, cls) => rows.appendChild(el("button", {
     class: cls || "plain", text: label, onclick: () => { closeModal(); fn(); },
   }));
-  mk("新建一轮对话", () => newConversation(char.id), "primary");
+  // 不再是「新建一轮对话」：会话列表去掉之后，一个角色只有聊着的那一条，
+  // 再建一条等于造一条再也点不回去的记录。要重新开始去聊天头部的「清空记录」。
+  mk("聊天", () => openThreadFor(char.id), "primary");
   mk("编辑人设 / 外观", () => openCharEditor(char, ctx));
   if (!char.builtin) mk("改头像（重新画一张）", () => openCharEditor(char, ctx));
   mk("复制一份再改", async () => {
@@ -1473,47 +1574,22 @@ function openHeadMenu() {
   }));
   mk("看本次发给模型的内容", "上下文", () => { if (state.convId) openContext(state.convId, ctx); });
   mk("把较早的对话压缩成角色记忆", "总结记忆", compactNow);
-  mk("删除当前会话", "删除", () => {
-    if (state.convId) openConvMenu(state.conversation || { id: state.convId });
-  }, "danger");
+  mk("清空记录，从头再聊", "删除", () => deleteCurrentConversation(), "danger");
   openModal(el("div", {}, [titleBar("会话操作", charName(state.charId) || ""), rows]));
 }
 
-async function openConvMenu(conv) {
-  const rows = el("div", { class: "row-actions", style: "flex-direction:column;align-items:stretch" });
-  const mk = (label, fn, cls) => rows.appendChild(el("button", { class: cls || "plain", text: label, onclick: () => { closeModal(); fn(); } }));
-  mk("打开", () => openConversation(conv.id), "primary");
-  mk(conv.pinned ? "取消置顶" : "置顶", async () => {
-    await api("/api/conversations/" + conv.id, { method: "PATCH", json: { pinned: !conv.pinned } });
-    await loadConversations();
-  });
-  mk("重命名", () => {
-    const input = el("input", { type: "text", value: conv.title || "", placeholder: "会话标题" });
-    openModal(el("div", {}, [
-      titleBar("重命名会话"),
-      el("div", { class: "field" }, [input]),
-      el("div", { class: "row-actions" }, [
-        el("button", { class: "primary", text: "保存", onclick: async () => {
-          await api("/api/conversations/" + conv.id, { method: "PATCH", json: { title: input.value } });
-          closeModal();
-          await loadConversations();
-          if (state.convId === conv.id) state.conversation.title = input.value, renderHead();
-        } }),
-      ]),
-    ]));
-    input.focus();
-  });
-  mk("删除会话", async () => {
-    if (!(await confirmDialog("删除这个会话？", "所有消息记录一起删掉，不可恢复。", "删除"))) return;
-    await api("/api/conversations/" + conv.id, { method: "DELETE" });
-    await loadConversations();
-    if (state.convId === conv.id) {
-      state.convId = null;
-      const mine = state.conversations.filter((c) => c.character_id === state.charId);
-      if (mine.length) openConversation(mine[0].id); else newConversation(state.charId);
-    }
-  }, "danger");
-  openModal(el("div", {}, [titleBar("会话"), el("p", { class: "sub", text: charName(conv.character_id) + " · " + conv.message_count + " 条消息" }), rows]));
+/* 会话列表没了，「置顶 / 重命名 / 打开某一条」这些操作就没有了对象：
+   一个角色对应一条能点开的会话，这里只留「从头再来」这一个动作。 */
+async function deleteCurrentConversation() {
+  if (!state.convId) return;
+  const conv = state.conversation || { id: state.convId };
+  if (!(await confirmDialog("清空和 " + (charName(state.charId) || "TA") + " 的记录？",
+        "所有消息记录一起删掉，不可恢复；角色人设不受影响。", "删除"))) return;
+  await api("/api/conversations/" + conv.id, { method: "DELETE" });
+  await loadConversations();
+  state.convId = null;
+  const mine = state.conversations.filter((c) => c.character_id === state.charId);
+  if (mine.length) openConversation(mine[0].id); else newConversation(state.charId);
 }
 
 function downloadFile(path) {
@@ -1545,10 +1621,15 @@ function initTheme() {
 function bindStatic() {
   qs("btn-new-char").addEventListener("click", () => openCharEditor(null, ctx));
   qs("btn-ai-char").addEventListener("click", () => openAICreate(ctx));
-  qs("btn-new-conv").addEventListener("click", () => newConversation(state.charId));
-  qs("head-avatar").addEventListener("click", () => { if (currentChar()) openCharEditor(currentChar(), ctx); });
+  // 聊天头部点头像 = 看这个人的名片（微信聊天头部点名字也是进资料页）
+  qs("head-avatar").addEventListener("click", () => { if (currentChar()) openCard(currentChar().id); });
+  // 两个推入页的 ←：聊天回「对话」列表，名片回「联系人」
+  qs("btn-thread-back").addEventListener("click", () => showPage("chat"));
+  qs("btn-card-back").addEventListener("click", () => showPage("contacts"));
+  // 列表空着的时候「＋找人聊」把人带去通讯录（微信的 ✜ 也是这个作用）
+  qs("btn-find-chat").addEventListener("click", () => switchTab("contacts"));
   qs("btn-context").addEventListener("click", () => { if (state.convId) openContext(state.convId, ctx); });
-  qs("btn-del-conv").addEventListener("click", () => { if (state.convId) openConvMenu(state.conversation || { id: state.convId }); });
+  qs("btn-del-conv").addEventListener("click", () => deleteCurrentConversation());
   qs("btn-head-menu").addEventListener("click", openHeadMenu);
   qs("btn-compact").addEventListener("click", compactNow);
   qs("file-card").addEventListener("change", async (ev) => {
@@ -1579,7 +1660,7 @@ function bindStatic() {
   }
   qs("btn-new-messages").addEventListener("click", scrollBottom);
   qs("messages").addEventListener("scroll", paintNewMessages);
-  qs("side-q").addEventListener("input", (ev) => { state.sideQ = ev.target.value; renderSidebar(); });
+  qs("side-q").addEventListener("input", (ev) => { state.sideQ = ev.target.value; renderContacts(); });
   const input = qs("input");
   input.addEventListener("input", () => autosize(input));
   input.addEventListener("keydown", (ev) => {
@@ -1590,14 +1671,8 @@ function bindStatic() {
     if (state.streaming && state.abort) { state.abort.abort(); return; }
     send();
   });
-  for (const btn of document.querySelectorAll(".side-nav button[data-panel]")) {
-    btn.addEventListener("click", () => {
-      // 表情库入口已经挪进设置面板了，这里只剩两个常驻项
-      if (btn.dataset.panel === "settings") openSettings(ctx);
-      else openAbout(state.boot, ctx);
-    });
-  }
-  qs("btn-new-group").addEventListener("click", newGroupConversation);
+  // 设置整块内嵌在「我」页里（见 mountMePage），这里只剩一个「关于」入口
+  qs("btn-about").addEventListener("click", () => openAbout(state.boot, ctx));
   qs("btn-ai-next").addEventListener("click", aiNextTurn);
   qs("btn-ai-loop").addEventListener("click", () => aiAutoLoop(6));
   const sfxBtn = qs("btn-sfx");
@@ -1612,17 +1687,6 @@ function bindStatic() {
     localStorage.setItem("animechat-theme", next);
     qs("btn-theme").textContent = next === "dark" ? "☀" : "☾";
   });
-  qs("btn-collapse").addEventListener("click", () => {
-    if (isNarrow()) { hideChat(); return; }   // 窄屏是抽屉，没有「收起」这回事
-    const app = document.getElementById("app");
-    // 别拿 inline style 猜当前状态：窄屏默认宽度来自媒体查询，inline 是空的，
-    // 于是第一次点击会把"74px"再写一遍，按钮看起来是坏的。读实际算出来的列宽。
-    const first = parseFloat(String(getComputedStyle(app).gridTemplateColumns).split(" ")[0]) || 302;
-    const wide = first <= 150;
-    app.style.gridTemplateColumns = (wide ? "302px" : "74px") + " minmax(0, 1fr)";
-    app.dataset.wide = wide ? "1" : "0";
-    qs("btn-collapse").textContent = wide ? "«" : "»";
-  });
   /* 切回标签页 / 从别的 App 回到手机前台：正在看的这个会话到此算读完了。顺手拉一次
      会话列表，人在后台时到货的回复、或另一个标签页里刚落地的那句，红点才会补上或消掉。 */
   document.addEventListener("visibilitychange", () => {
@@ -1635,7 +1699,8 @@ function bindStatic() {
     if (ev.key === "Escape") {
       if (!qs("modal-root").hidden) dismissModals();
       else if (!qs("picker").hidden) togglePicker(false);
-      else if (isChatOpen()) hideChat();
+      else if (PUSH_ROOT[state.page]) showPage(PUSH_ROOT[state.page]);   // 聊天 / 名片里：←  equivalent
+      else if (state.page !== "chat") switchTab("chat");                 // 栏根页：回「对话」列表
       const lb = document.querySelector(".lightbox");
       if (lb) lb.remove();
     }

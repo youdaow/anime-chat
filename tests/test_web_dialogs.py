@@ -11,7 +11,7 @@ test_web_assets.py 那种「源码里有没有某个字符串」的断言。那�
 而 test_web_assets.py 当时全绿 —— 因为它断言的正是那行崩溃代码，
 等于把 bug 钉成了「必须保持的样子」。
 
-所以这里补一层执行冒烟：真调一次 openCharEditor / openSettings。
+所以这里补一层执行冒烟：真调一次 openCharEditor（弹窗）和 renderSettings（内嵌在「我」页的表单）。
 node 不在环境里就跳过（不硬要求前端工具链），但 scripts/test.ps1 会带上它。
 """
 

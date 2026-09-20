@@ -822,7 +822,9 @@ function meAvatarRow(ctx, s) {
   ]);
 }
 
-export async function openSettings(ctx) {
+/* 「我」页：我的人设 + 全部设置，内嵌渲染进 host（不再弹窗）。
+   每次切到这一页重画一次，所以拿到的永远是 state.settings 的最新值。 */
+export async function renderSettings(ctx, host) {
   const state = ctx.state;
   let s = JSON.parse(JSON.stringify(state.settings || {}));
   /* 接入方式是后端那张注册表（providers.py → /api/providers）里的一个 key，界面上只画下拉：
@@ -963,7 +965,7 @@ export async function openSettings(ctx) {
       const d = await api("/api/settings", { method: "PATCH", json: Object.assign(collect(), secrets()) });
       state.settings = d.settings;
       await ctx.refreshBootstrap();
-      closeModal();
+      // 这里不关窗：设置整块内嵌在「我」页里，没有窗可关。
       toast("设置已保存");
     } catch (err) { toast(err.message, "err"); }
   };
@@ -995,13 +997,19 @@ export async function openSettings(ctx) {
       const d = await api("/api/settings", { method: "PATCH", json: { llm_api_key: "" } });
       state.settings = d.settings;
       await ctx.refreshBootstrap();
-      closeModal();
-      toast("已切到 Mock 模式");
+      toast("已切到 Mock 模式");   // 设置内嵌在「我」页，不用关窗；格子下面重画一次就是新状态
     } catch (err) { toast(err.message, "err"); }
   };
 
-  const body = el("div", {}, [
-    titleBar("设置", "存在 data/settings.json"),
+  const body = el("div", { class: "settings-page" }, [
+    /* 「我是谁」排在最前：这一页就叫「我」，先回答「我是谁」再谈模型和表情。
+       以前它是设置弹窗里的第四节，藏在「表情包」「GitHub」后面。 */
+    el("fieldset", {}, [
+      el("legend", { text: "我是谁" }),
+      meAvatarRow(ctx, s),
+      field("我的名字", f.user_name),
+      field("关于我的补充设定", f.user_notes),
+    ]),
     el("p", { class: "sub", text: "接法只有一种形状：Base URL + Key + 模型名。自建中转站填它给你的地址，官方平台填平台的地址；三格都空着就是内置 Mock（本机假回复，不联网、不花钱）。" }),
     el("fieldset", {}, [
       el("legend", { text: "模型" }),
@@ -1044,21 +1052,15 @@ export async function openSettings(ctx) {
     ]),
     ghFieldset(ctx, f, ghNote),
     feishuFieldset(f, s),
-    el("fieldset", {}, [
-      el("legend", { text: "我是谁" }),
-      meAvatarRow(ctx, s),
-      field("我的名字", f.user_name),
-      field("关于我的补充设定", f.user_notes),
-    ]),
     el("div", { class: "row-actions" }, [
       el("button", { class: "primary", text: "保存", onclick: save }),
-      el("button", { class: "plain", text: "取消", onclick: closeModal }),
       el("span", { class: "spacer" }),
-      el("span", { class: "tip", text: "数据目录：" + (s.data_dir || "data/") }),
+      el("span", { class: "tip", text: "存在 data/settings.json · 数据目录：" + (s.data_dir || "data/") }),
     ]),
   ]);
-  openModal(body, { wide: true });
-  applyProvider();   // 一开框就按当前接入方式收掉不该出现的格子（内置 Mock 不摆地址和 Key）
+  // 挂进「我」页那个容器，不再走弹窗：这一页本身就是设置。
+  clear(host).appendChild(body);
+  applyProvider();   // 一挂上就按当前接入方式收掉不该出现的格子（内置 Mock 不摆地址和 Key）
 }
 
 /* ---------------------------------------------------------------- 表情库管理 */

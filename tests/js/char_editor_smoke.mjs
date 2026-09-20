@@ -21,7 +21,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const WEB = join(HERE, "..", "..", "src", "animechat", "web");
 
 await import("./dom_stub.mjs");
-const { modalRoot, modalBody } = await import("./dom_stub.mjs");
+const { modalRoot, modalBody, makeNode } = await import("./dom_stub.mjs");
 
 const dir = mkdtempSync(join(tmpdir(), "animechat-smoke-"));
 writeFileSync(join(dir, "ui.js"), readFileSync(join(WEB, "ui.js"), "utf8"));
@@ -106,7 +106,7 @@ check("没留原图时「微调位置」该是灰的",
 /* ------------------------------------------------ 4. 设置面板：接入方式那段刚改过
    预置平台要把地址填好并锁成只读，「自定义」要放开可填。这段以前只有源码断言，
    真跑一次才知道有没有在渲染期抛错。
-   openSettings 会 await /api/providers（走 ui.js 的 fetch），所以先把 fetch 顶掉。 */
+   renderSettings 会 await /api/providers（走 ui.js 的 fetch），所以先把 fetch 顶掉。 */
 const PROVIDERS = [
   { key: "deepseek", name: "DeepSeek", family: "openai", needs_base_url: true, needs_key: true,
     base_url: "https://api.deepseek.com/v1", hint: "官方地址已预置",
@@ -124,7 +124,11 @@ globalThis.fetch = async (path) => ({
   text: async () => "",
 });
 
-const { openSettings } = await import(pathToFileURL(join(dir, "panels.js")).href);
+const { renderSettings } = await import(pathToFileURL(join(dir, "panels.js")).href);
+/* 设置不再是弹窗，是内嵌在「我」页里的一块表单 —— 渲染目标换成普通容器，
+   下面查格子也从 modalBody 换成这个 host。 */
+const settingsHost = makeNode("div");
+const resetSettings = () => { settingsHost.children.length = 0; };
 
 /* field() 画出来的是 div.field > label + 控件，按 label 文字找格子最可靠。
    接入方式那格是 select，所以三种控件都要认。 */
@@ -149,7 +153,7 @@ for (const [label, provider, savedBase] of [
   ["自定义", "openai", "http://my-relay:18787/v1"],
   ["内置 Mock", "mock", ""],
 ]) {
-  reset();
+  resetSettings();
   const ctx = { ...CTX, state: { ...CTX.state, settings: {
     llm_provider: provider, llm_base_url: savedBase, llm_model: "m", llm_api_key: "sk-x",
     llm_temperature: 0.9, llm_max_tokens: 800, context_chars: 6000, llm_timeout: 120,
@@ -159,14 +163,14 @@ for (const [label, provider, savedBase] of [
   } } };
   let err = null;
   try {
-    await openSettings(ctx);        // async：先 await /api/providers 再画格子
+    await renderSettings(ctx, settingsHost);   // async：先 await /api/providers 再画格子
   } catch (e) {
     err = (e && e.message) || String(e);
   }
   check("设置面板（" + label + "）渲染期抛错", err === null, err || "");
   if (err) continue;
-  check("设置面板（" + label + "）没打开", modalRoot.hidden === false);
-  const urlBox = fieldInput(modalBody, "Base URL");
+  check("设置面板（" + label + "）没画出东西", settingsHost.children.length > 0);
+  const urlBox = fieldInput(settingsHost, "Base URL");
   check("设置面板（" + label + "）找不到 Base URL 那格", !!urlBox);
   if (!urlBox) continue;
   if (label === "预置平台") {
@@ -188,7 +192,7 @@ for (const [label, provider, savedBase] of [
 }
 
 /* 在平台和自定义之间来回切一次，不该把用户填的中转站地址弄丢 */
-reset();
+resetSettings();
 const switchCtx = { ...CTX, state: { ...CTX.state, settings: {
   llm_provider: "openai", llm_base_url: "http://my-relay:18787/v1", llm_model: "m",
   llm_api_key: "sk-x", llm_temperature: 0.9, llm_max_tokens: 800, context_chars: 6000,
@@ -196,9 +200,9 @@ const switchCtx = { ...CTX, state: { ...CTX.state, settings: {
   sticker_search_provider: "auto", user_name: "我", user_notes: "",
   github_repo: "", github_pack_path: "stickers", github_token: "",
 } } };
-await openSettings(switchCtx);
-const access = fieldInput(modalBody, "接入方式");
-const urlBox = fieldInput(modalBody, "Base URL");
+await renderSettings(switchCtx, settingsHost);
+const access = fieldInput(settingsHost, "接入方式");
+const urlBox = fieldInput(settingsHost, "Base URL");
 check("找不到「接入方式」下拉", !!access);
 if (access && urlBox) {
   const fire = (type) => { for (const fn of access._listeners[type] || []) fn({ target: access }); };
@@ -213,7 +217,7 @@ if (access && urlBox) {
 /* ------------------------------------------------ 5. 飞书那段
    新增的 fieldset 要真的画出来；App Secret 已保存时必须回掩码，且用户留着掩码
    直接点保存不能把真凭据覆盖掉（这个坑以前吃掉过 llm_api_key）。 */
-reset();
+resetSettings();
 const fsCtx = { ...CTX, state: { ...CTX.state, characters: [{ id: "hero", name: "亚丝娜", title: "" }], settings: {
   llm_provider: "mock", llm_base_url: "", llm_model: "m", llm_api_key: "", llm_temperature: 0.9,
   llm_max_tokens: 800, context_chars: 6000, llm_timeout: 120, llm_thinking: "off",
@@ -222,10 +226,10 @@ const fsCtx = { ...CTX, state: { ...CTX.state, characters: [{ id: "hero", name: 
   feishu_app_id: "cli_abc", feishu_app_secret: "sec_…****wxyz", feishu_character: "hero",
   feishu_stickers: false, configured_secrets: { feishu_app_secret: true },
 } } };
-await openSettings(fsCtx);
-const appIdBox = fieldInput(modalBody, "App ID");
-const secretBox = fieldInput(modalBody, "App Secret");
-const charBox = fieldInput(modalBody, "新会话默认角色");
+await renderSettings(fsCtx, settingsHost);
+const appIdBox = fieldInput(settingsHost, "App ID");
+const secretBox = fieldInput(settingsHost, "App Secret");
+const charBox = fieldInput(settingsHost, "新会话默认角色");
 check("找不到「App ID」格子", !!appIdBox);
 check("找不到「App Secret」格子", !!secretBox);
 check("找不到「新会话默认角色」下拉", !!charBox);
@@ -254,7 +258,7 @@ const stickerBox = (function find(node) {
   }
   for (const c of node.children || []) { const hit = find(c); if (hit) return hit; }
   return null;
-}(modalBody));
+}(settingsHost));
 check("找不到「回复带表情包图」开关", !!stickerBox);
 if (stickerBox) check("表情开关没按保存值画（存了 false 却显示开着）", stickerBox.checked === false);
 
