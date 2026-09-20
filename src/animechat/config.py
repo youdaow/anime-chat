@@ -1,7 +1,10 @@
-"""运行期配置：默认值 < .env / 环境变量 < data/settings.json。
+"""运行期配置：默认值 < data/settings.json < 环境变量。
 
 界面里改的设置写进 data/settings.json（本机文件）。密钥只在本机保存，
 对外接口一律返回掩码，绝不回显明文，也不写进日志。
+
+没有 dotenv：程序不读 .env 文件，只认真实环境变量（可覆盖的字段见 ENV_KEYS，
+用法写在仓库根的 .env.example）。部署时用环境变量注入密钥，界面上的改动盖不掉它。
 """
 
 from __future__ import annotations

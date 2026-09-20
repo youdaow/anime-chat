@@ -7,18 +7,20 @@
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from animechat import providers
-from animechat.config import Settings
+from animechat.config import ENV_KEYS, Settings
 from animechat.server import create_app
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "animechat"
 WEB = SRC / "web"
 README = SRC.parent.parent / "README.md"
+ENV_EXAMPLE = SRC.parent.parent / ".env.example"
 
 # 那些只有已停用的网关才成立的说法。出现一次就是给用户指错路。
 BANNED = ("sk-hub", "8789", "AI Hub", "Hub 网关", "只有 Hub", "填 auto", "去 Hub")
@@ -226,4 +228,26 @@ def test_readme_is_written_for_a_user_with_their_own_key():
     body = README.read_text(encoding="utf-8")
     hits = [ln.strip() for ln in body.splitlines() if any(w in ln for w in BANNED)]
     assert not hits, "README 还在讲那个停用的网关：" + "; ".join(hits[:3])
+
+
+def test_env_example_teaches_the_current_way_to_connect():
+    """.env.example 以前教的是「Base URL 填本机 8789、模型名填 auto 让网关选路、想要好图
+    就去注册 Tenor Key」—— 那台网关已经停用，Tenor/Giphy 也从界面拆了（README 明说填了
+    也用不上）。上面那些扫描没有一个读过它，所以代码改了三圈它还停在原地。
+    这里锁三件事：① 没有已停用网关的字样，② 不劝人注册用不上的 Key，③ 列出的变量名和
+    默认接入方式必须真的是程序认的那些 —— 第三条才是防下次再漂的。"""
+    body = ENV_EXAMPLE.read_text(encoding="utf-8")
+    for word in BANNED:
+        assert word not in body, ".env.example 还在讲那个停用的网关：" + word
+    for word in ("Tenor", "Giphy"):
+        assert word not in body, ".env.example 别劝人为用不上的来源注册：" + word
+
+    named = {n[len("ANIMECHAT_"):].lower() for n in re.findall(r"^#?(ANIMECHAT_[A-Z_0-9]+)=", body, re.M)}
+    assert named, ".env.example 一个变量都没列，这个测试就白写了"
+    # DATA_DIR 走 config._default_data_dir 里的 os.environ，不在 ENV_KEYS 里，但确实能设
+    unknown = sorted(named - set(ENV_KEYS) - {"data_dir"})
+    assert not unknown, ".env.example 教了程序不认的变量：" + "、".join(unknown)
+    assert "llm_provider" in named and "llm_api_key" in named and "llm_model" in named, \
+        "接入方式是这三格，示例里少了谁用户就配不上"
+    assert "=" + providers.DEFAULT_KEY in body, "默认接入方式要跟 providers.DEFAULT_KEY 对上"
 
