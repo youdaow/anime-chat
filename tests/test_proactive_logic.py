@@ -84,17 +84,33 @@ def test_read_float_rejects_nan_inf():
 
 
 def test_schedule_requires_trustworthy_activity():
-    # A stale positive deadline is accepted only while both the deadline and
-    # the last activity timestamp are close to now.
-    assert not proactive_schedule_valid(1000, 900, 100, 1)
+    # 可信度看到期点新不新鲜：太旧的历史到期点不放行（否则升级后的首个 tick
+    # 会朝所有旧会话集中发），续期一轮之后就该放行 —— 见下面那个 heal 测试。
     assert not proactive_schedule_valid(1000, 100, 100, 1)
-    assert not proactive_schedule_valid(1000, 900, 0, 1)
+    assert not proactive_schedule_valid(1000, 900, 0, 1)              # 从没记过活动时间
     assert not proactive_schedule_valid(1000, 900, float("nan"), 1)
     assert not proactive_schedule_valid(1000, 900, float("inf"), 1)
-    assert not proactive_schedule_valid(1000, 0, 100, 1)
+    assert not proactive_schedule_valid(1000, 0, 100, 1)              # 从没排过程
     assert proactive_schedule_valid(1000, 900, 890, 1)
     assert proactive_schedule_valid(1000, 999, 999, 1)
     assert proactive_schedule_valid(1000, 1000, 1000, 1)
+    # 沉默很久也必须还能被主动发言。这里以前还要求 last_active 落在两轮之内，
+    # 于是「41 小时没说话」的会话每轮都判不可信、只续期不发送 —— 主动发言
+    # 唯一要处理的正是沉默很久的会话，等于这类人永远收不到（用户实测撞到的）。
+    assert proactive_schedule_valid(1000, 900, 100, 1)
+
+
+def test_long_silence_heals_after_one_renewal():
+    """老会话该有的演化：第一轮被判不可信 → 续期到未来 → 下一轮可信 → 到点就发。
+       以前第二步就断了，每轮都回到「判不可信 → 续期」，永远发不出去。
+       时间轴跟上面那条一样用小尺度：idle_min=1，两轮窗口就是 120 秒。"""
+    idle, now = 1, 1000.0
+    last = 1.0                                   # 对方最后一句在 1000 秒前 —— 远超两轮
+    assert not proactive_schedule_valid(now, 100.0, last, idle), "太旧的历史到期点先被判不可信"
+    due = now + proactive_interval(idle, _Lower())        # 续期到未来（取最小间隔 30 秒）
+    assert proactive_schedule_valid(due, due, last, idle), \
+        "续期一轮之后就该可信，哪怕对方这期间一直没说话"
+    assert proactive_due(due, due, 0, 10), "到点且没超每日上限，就该发"
 
 
 def test_idle_note():

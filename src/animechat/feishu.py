@@ -665,8 +665,14 @@ def proactive_schedule_valid(now: float, next_at: float, last_active: float,
 
     旧版本/迁移数据可能留下一个早已过期的正数 next_due。若直接按当前时间判
     到期，升级后的首个扫描 tick 会向所有旧会话集中发消息；因此这类 stale
-    状态必须先续期到未来随机窗口。活动时间缺失、非有限或已过期时，
-    都不能把旧的正数到期点当成可信计划。
+    状态必须先续期到未来随机窗口 —— 续期一次就够，下一轮到期点已是未来值。
+
+    可信度只看「到期点自己新不新鲜」，不看对方多久没说话。以前这里还要求
+    last_active 也在两轮之内，于是沉默超过 2×基准的会话每轮都判 stale、
+    只续期永不发送 —— 而「很久没说话」恰恰就是主动发言唯一要处理的那种情况：
+    一个不常聊的人等于永远不会有主动消息（实测：沉默 41 小时的会话，
+    手动把到期点设到过去也没发出去）。没记录过活动的会话仍算不可信，
+    那条由 last_active <= 0 挡住。
     """
     if (not math.isfinite(now) or not math.isfinite(next_at)
             or not math.isfinite(last_active)):
@@ -674,7 +680,7 @@ def proactive_schedule_valid(now: float, next_at: float, last_active: float,
     if next_at <= 0 or last_active <= 0:
         return False
     stale_window = 2.0 * max(1, int(idle_min)) * 60.0
-    return next_at >= now - stale_window and last_active >= now - stale_window
+    return next_at >= now - stale_window
 
 
 
