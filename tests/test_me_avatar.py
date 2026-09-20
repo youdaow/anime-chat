@@ -19,7 +19,7 @@ from animechat import images as images_mod
 from animechat import media
 from animechat import me
 from animechat import websearch
-from animechat.config import load_settings
+from animechat.config import load_settings, save_settings
 from animechat.server import create_app
 
 WEB = Path(__file__).resolve().parent.parent / "src" / "animechat" / "web"
@@ -73,6 +73,21 @@ def test_swapping_avatar_busts_the_browser_cache(client):
     off = client.post("/api/me/avatar-clear").json()["settings"]
     assert off["user_avatar"] == "" and off["user_avatar_at"] == 0
     assert media.resolve("/media/avatars/me.png") is None
+
+
+def test_missing_avatar_file_is_not_handed_to_the_frontend(client):
+    """指针还在、文件没了（换过数据目录、清过 assets/avatars）时，回显要当成没头像。
+    角色那侧 _char_views 早就这么防了，「我」这侧漏了：后果是每条自己发的消息都去
+    要一次 /media/avatars/me.png 吃 404，控制台每行刷一条，界面还是退回首字——
+    白挨一次请求，什么也没换来。"""
+    save_settings({"user_avatar": "/media/avatars/me.png", "user_avatar_at": 1.0})
+    assert media.resolve("/media/avatars/me.png") is None, "前提：这张图确实不在盘上"
+
+    got = client.get("/api/settings").json()["settings"]
+    assert got["user_avatar"] == "", "文件不在就别把死链接交给前端"
+    assert client.get("/api/bootstrap").json()["settings"]["user_avatar"] == ""
+    # 只改回显：那张图随时可能被拷回来，读一次就把用户设置改掉更糟
+    assert load_settings().user_avatar == "/media/avatars/me.png"
 
 
 def test_oversized_upload_is_refused_before_reading_pixels(client):

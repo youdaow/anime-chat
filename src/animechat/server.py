@@ -1193,9 +1193,16 @@ def _settings_view(s: Settings) -> dict:
     """给前端的设置快照 = 配置本身 + 一点磁盘状态。
 
     多出来的 user_avatar_source 是「我的头像有没有留下可重框的原图」：界面拿它决定
-    「微调位置」能不能按。这种事不该等用户点下去才报错。"""
+    「微调位置」能不能按。这种事不该等用户点下去才报错。
+
+    指针还在但文件没了（换数据目录、清过 assets/avatars）要当成没有头像：角色那侧
+    _char_views 早就这么防了，「我」这侧漏了一次，结果每条自己发的消息都去要一次
+    /media/avatars/me.png 吃 404，控制台每行刷一条。只改回显、不动 settings.json ——
+    那张图随时可能被拷回来，读一次就把用户的设置改掉更糟。"""
     data = settings_for_client(s)
     data["user_avatar_source"] = me.source_url()
+    if data.get("user_avatar") and media.resolve(data["user_avatar"]) is None:
+        data["user_avatar"] = ""
     return data
 
 
