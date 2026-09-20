@@ -66,11 +66,9 @@ def test_claim_commit_release_are_token_scoped(db):
     assert db.get_pref("quota-20260919") == "1"
 
     assert db.release_proactive("chat-1", "wrong-token") is False
-    assert db.renew_proactive("chat-1", "wrong-token", ttl=30) is False
     assert db.commit_proactive("chat-1", "wrong-token") is False
     assert db.get_pref("quota-20260919") == "1"
 
-    assert db.renew_proactive("chat-1", token, ttl=60) is True
     assert db.commit_proactive("chat-1", token) is True
     assert db.commit_proactive("chat-1", token) is False
     assert db.release_proactive("chat-1", token) is False

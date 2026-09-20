@@ -300,20 +300,6 @@ class Store:
             conn.execute("INSERT INTO prefs(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                          (key, value))
 
-    def increment_pref(self, key: str, amount: int = 1, default: int = 0) -> int:
-        """原子地增加一个整数偏好；用于跨进程/跨线程的飞书日配额计数。"""
-        with self._raw() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT value FROM prefs WHERE key=?", (key,)).fetchone()
-            try:
-                current = int(float(row["value"])) if row and math.isfinite(float(row["value"])) else default
-            except (TypeError, ValueError, OverflowError):
-                current = default
-            value = current + int(amount)
-            conn.execute("INSERT INTO prefs(key,value) VALUES(?,?) "
-                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
-            return value
-
     @staticmethod
     def _pref_int(row, default: int = 0) -> int:
         if not row:
@@ -410,25 +396,6 @@ class Store:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (claim_key, payload))
             return token
-
-    def renew_proactive(self, chat_id: str, token: str, ttl: float) -> bool:
-        """延长仍属于当前 token 且尚未过期的 reserved lease。"""
-        claim_key = "feishu.proactive.claim." + str(chat_id or "")
-        with self._raw() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT value FROM prefs WHERE key=?", (claim_key,)).fetchone()
-            if not row:
-                return False
-            data, expires, state, _old_quota_key = self._parse_proactive_claim(row["value"])
-            if data is None or state != "reserved" or expires <= time.time():
-                return False
-            if data.get("token") != token:
-                return False
-            ttl = self._proactive_ttl(ttl)
-            data["expires"] = time.time() + ttl
-            conn.execute("UPDATE prefs SET value=? WHERE key=?",
-                         (json.dumps(data, ensure_ascii=False), claim_key))
-            return True
 
     def commit_proactive(self, chat_id: str, token: str) -> bool:
         """成功发送后提交 lease；配额保留，lease 进入 committing 状态。

@@ -1,0 +1,24 @@
+# 仓库里一律存 LF。这台机器 core.autocrlf=true，于是每次 git 碰过工作副本都要刷一屏
+# "LF will be replaced by CRLF"，而且谁用 Windows 编辑器存一下盘，下次提交就是一个
+# 整文件换行改动的巨型 diff（前端四个 js 加起来两千多行，那种 diff 没法 review）。
+# 声明清楚之后：入库永远 LF，检出也永远 LF，两个会话同时改也不会对撞行尾。
+* text=auto eol=lf
+
+# 表情包库和头像会被 git 当文本嗅探（PNG 里撞上 0x1A 就判成文本，然后被换行转换毁掉），
+# 所以按扩展名钉死成二进制。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.db binary
+*.sqlite binary
+
+# 批处理必须在 cmd 下能读，CRLF 是它的一部分。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# diff 里这些行不该被算进改动量。
+*.min.js linguist-generated
+package-lock.json linguist-generated
