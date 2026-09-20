@@ -220,11 +220,15 @@ class StickerLibrary:
         for key, value in meta.items():
             if key == "__uses__":
                 continue
-            if isinstance(value, dict) and "uses" in value:
+            if isinstance(value, dict) and ("uses" in value or not value.get("favorite")):
                 value = dict(value)
-                count = value.pop("uses")
+                count = value.pop("uses", 0)
                 if count:
                     uses[key] = count
+                # 收藏取消后别把 "favorite": false 留在文件里：那行本来不存在，
+                # 写回去之后这条 entry 就永久算「已修改」，收藏一次再取消也回不到原样。
+                if not value.get("favorite"):
+                    value.pop("favorite", None)
             if key == "__builtin_overrides__" or not is_local_only(key):
                 shared[key] = value
             else:

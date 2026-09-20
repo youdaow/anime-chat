@@ -181,3 +181,19 @@ def test_legacy_single_meta_file_is_split_on_load():
     # 拆完内存里还得能看见全部（合并读）
     lib = StickerLibrary()
     assert lib._meta().get("qq收到-xyz.png", {}).get("label") == "杂鱼"
+
+
+def test_unfavoriting_restores_the_shared_file_byte_for_byte():
+    """收藏一次再取消，仓库那份要回到原样。把 "favorite": false 这种默认值写进去的话，
+       那条 entry 就永久算「已修改」—— 动一次表情库就再也不能干净地提交。"""
+    make_png(None, "公开图.png")
+    lib = StickerLibrary()
+    st = next(s for s in lib.items.values() if s.origin != "builtin")
+    shared_path = _meta_files()[0]
+    before = shared_path.read_text(encoding="utf-8")
+    lib.patch(st.id, favorite=True)
+    assert shared_path.read_text(encoding="utf-8") != before, "收藏这件事总得写下来"
+    lib.patch(st.id, favorite=False)
+    after = shared_path.read_text(encoding="utf-8")
+    assert after == before, "取消收藏后回不到原样，差在：" + str(set(after.splitlines()) ^ set(before.splitlines()))
+    assert lib.get(st.id).favorite is False
