@@ -22,6 +22,16 @@ DIST_DIR = ROOT / "dist"
 BUILD_DIR = DIST_DIR / "anime-chat"
 ASSETS_DIR = BUILD_DIR / "assets"
 
+# 本机专属的表情状态，和 .gitignore 里 data/stickers/qq* + data/stickers_meta.local.json
+# 那两条同义（前缀表在 src/animechat/stickers.py 的 LOCAL_ONLY_PREFIXES）。
+# 这里不 import animechat：构建脚本要在装好依赖之前就能跑。
+LOCAL_STICKER_GLOBS = (
+    "stickers_meta.local.json",
+    "stickers_meta*.json.bak-*",
+    "stickers_quarantine",
+    "qq*.png", "qq*.jpg", "qq*.jpeg", "qq*.gif", "qq*.webp",
+)
+
 def run(cmd: list[str], cwd: Path | None = None) -> bool:
     try:
         subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True)
@@ -94,18 +104,28 @@ def copy_assets():
         print("⚠️  没有找到 assets 目录")
 
 def copy_data():
-    """复制角色和表情数据（但排除敏感文件）"""
+    """复制角色和表情数据（但排除敏感 + 本机专属文件）"""
     print("📋 复制角色和表情数据...")
     
     data_src = ROOT / "data"
-    if data_src.exists():
-        data_dst = BUILD_DIR / "data"
-        shutil.copytree(data_src, data_dst, ignore=shutil.ignore_patterns(
-            "animechat.db", "settings.json", "feishu.lock", "feishu.pid"
-        ))
-        print("✅ 角色和表情数据已复制")
-    else:
+    if not data_src.exists():
         print("⚠️  没有找到 data 目录")
+        return
+
+    # 本机专属的那半表情状态，和聊天记录/密钥一个性质，不进部署包：
+    #   stickers_meta.local.json  qq* 那批图（.gitignore 也不收）的定义 + 每张被用过几次
+    #   data/stickers/qq*         你私人收藏/收到的 QQ 聊天表情（几百 MB，不该上服务器）
+    #   stickers_quarantine/      同步时被移出去的隔离区，是本机的回收站
+    #   *.bak-*                   脚本每次批量写 meta 前存的备份
+    # 漏掉这条会在服务器上把这份文件的原样盖过去 —— 那台机器的使用计数就没了。
+    ignore = shutil.ignore_patterns(
+        "animechat.db", "settings.json", "feishu.lock", "feishu.pid",
+        *LOCAL_STICKER_GLOBS,
+    )
+    data_dst = BUILD_DIR / "data"
+    shutil.copytree(data_src, data_dst, ignore=ignore)
+    print("✅ 角色和表情数据已复制（本机 QQ 表情与其定义、使用计数已跳过）")
+    print("   要让服务器也用那批表情，把 data/stickers/qq* 和 data/stickers_meta.local.json 单独 scp 过去。")
 
 def install_deps():
     """安装依赖"""

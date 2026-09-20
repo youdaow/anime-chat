@@ -12,7 +12,6 @@
 """
 import argparse
 import hashlib
-import json
 import re
 import shutil
 import sys
@@ -21,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from animechat.config import user_sticker_dir
-from animechat.stickers import META_NAME, library
+from animechat.stickers import library
 
 CAT = Path.home() / "Desktop" / "表情包_已分类" / "1_二次元"
 KEEP_ROOT = CAT
@@ -58,8 +57,11 @@ def main():
     print(f"桌面保留 {len(kept)} 张，内容去重后 {len(kept_by_sha)} 种")
 
     stdir = user_sticker_dir()
-    meta_path = stdir.parent / META_NAME
-    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    lib = library()
+    # 走库的合并视图：qq* 的定义现在住在 stickers_meta.local.json。只读仓库那份的话
+    # 那批条目看着像不存在 —— 该隔离的一张都不会动，桌面图会被当新图重复导入，
+    # 而新条目盖掉旧条目的那一刻，打过的视觉标签就没了。
+    meta = lib.read_meta()
     quar = stdir.parent / "stickers_quarantine"
 
     # 库里的 QQ 条目：sha1 -> 文件名
@@ -87,10 +89,8 @@ def main():
                 print(f"   {s}  {p.name[:24]}")
         return 0
 
-    # 备份 meta
-    if meta_path.is_file():
-        bak = meta_path.with_name(META_NAME + ".bak-" + time.strftime("%Y%m%d%H%M%S"))
-        shutil.copy2(meta_path, bak)
+    # 备份两份 meta（仓库那份 + 本机那份），这份脚本会同时改到它们
+    for bak in lib.backup_meta():
         print(f"已备份 meta -> {bak.name}")
 
     quar.mkdir(parents=True, exist_ok=True)
@@ -126,9 +126,9 @@ def main():
         }
         added += 1
 
-    # 写回 meta + 刷新
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    library().refresh()
+    # 写回 meta（按归属拆成两份）+ 刷新
+    lib.write_meta(meta)
+    lib.refresh()
 
     qq_left = sum(1 for v in meta.values() if isinstance(v, dict) and str(v.get("note", "")).startswith("QQ"))
     print(f"\n完成：新增 {added}、移入隔离 {moved}、库内 QQ 现 {qq_left} 张（应≈{len(keep) + added}）。")

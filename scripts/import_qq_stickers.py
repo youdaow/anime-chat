@@ -19,7 +19,6 @@
 """
 import argparse
 import hashlib
-import json
 import re
 import shutil
 import sys
@@ -165,14 +164,16 @@ def do_import(items, base, dry=False):
     """把去重后的图导入 animechat：复制到 data/stickers + 写 meta，然后 refresh 一次。"""
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from animechat.config import user_sticker_dir
-    from animechat.stickers import library, META_NAME, _safe_id
+    from animechat.stickers import library, _safe_id
     from animechat import emotion
 
     target_dir = user_sticker_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
     lib = library()
-    meta_path = target_dir.parent / META_NAME
-    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    # 合并视图：qq* 那批定义在本机专属的 stickers_meta.local.json 里，只读仓库那份
+    # 会把已入库的那批看成「没有」—— 于是整批重导一遍，新条目盖掉旧条目，
+    # 视觉标签跟着没。
+    meta = lib.read_meta()
     # 注意：meta 里的 sha1 是 10 位，这里 items 的 d 是 12 位，比较用前 10 位
     have10 = {str(v.get("sha1") or "") for v in meta.values() if isinstance(v, dict)}
 
@@ -207,12 +208,10 @@ def do_import(items, base, dry=False):
         print(f"[dry-run] 将新增 {added} 张，跳过已入库 {skipped} 张。")
         return
 
-    # 真实写入前，先给含现有 77 张定义的 meta 存一份带时间戳的备份。
-    if meta_path.is_file():
-        bak = meta_path.with_name(META_NAME + ".bak-" + time.strftime("%Y%m%d%H%M%S"))
-        shutil.copy2(meta_path, bak)
+    # 真实写入前，给两份 meta 各存一份带时间戳的备份。
+    for bak in lib.backup_meta():
         print(f"已备份原 meta -> {bak.name}")
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    lib.write_meta(meta)
     lib.refresh()                       # 一次扫盘，把新文件全部纳入
     total = len(lib.all())
     print(f"导入完成：新增 {added} 张，跳过重复 {skipped} 张。")

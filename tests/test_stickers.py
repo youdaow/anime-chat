@@ -197,3 +197,44 @@ def test_unfavoriting_restores_the_shared_file_byte_for_byte():
     after = shared_path.read_text(encoding="utf-8")
     assert after == before, "取消收藏后回不到原样，差在：" + str(set(after.splitlines()) ^ set(before.splitlines()))
     assert lib.get(st.id).favorite is False
+
+
+def test_batch_scripts_go_through_the_library_not_one_meta_file():
+    """批量脚本自己 json.load 单个文件 = 只看得到仓库那半。qq* 那批定义在 local 那份里，
+       漏读就把它们当成「不存在」，然后整批重导、新条目盖掉旧条目，打好的视觉标签静悄悄
+       没了 —— 真撞上过：1613 张退化成 {"sha1": ...}，靠 sync 脚本留的 .bak 才捞回来。
+       refresh() 会替没人认领的图补一条光秃秃的条目，所以这件事发生时谁都看不出来。"""
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    for name in ("import_qq_stickers.py", "sync_library_from_desktop.py", "tag_stickers_vision.py"):
+        src = (scripts / name).read_text(encoding="utf-8")
+        assert "read_meta()" in src, name + " 要用库的合并视图读 meta"
+        assert ".write_meta(" in src, name + " 要用库的拆分写回 meta"
+        assert "META_NAME" not in src, name + " 不许再自己拼 meta 文件路径"
+
+
+def test_deploy_package_skips_machine_local_sticker_state(tmp_path, monkeypatch):
+    """部署包里带上 local 那份，等于把这台机器的使用计数盖到服务器上去；带上 qq* 那几百 MB
+       私人聊天表情，等于把它们传上一台别人也碰得到的机器。两条都按 .gitignore 的策略跳过。"""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import build_deploy
+
+    data = tmp_path / "repo" / "data"
+    (data / "stickers").mkdir(parents=True)
+    for name in ("stickers_meta.json", "stickers_meta.local.json",
+                 "stickers_meta.json.bak-20260915122837", "animechat.db", "settings.json"):
+        (data / name).write_text("{}", encoding="utf-8")
+    (data / "stickers_quarantine").mkdir()
+    (data / "stickers" / "qq商店-0b10acd309.png").write_bytes(b"x")
+    (data / "stickers" / "傲娇+哼.png").write_bytes(b"x")
+    monkeypatch.setattr(build_deploy, "ROOT", tmp_path / "repo")
+    monkeypatch.setattr(build_deploy, "BUILD_DIR", tmp_path / "out" / "anime-chat")
+
+    build_deploy.copy_data()
+
+    out = tmp_path / "out" / "anime-chat" / "data"
+    assert (out / "stickers_meta.json").is_file(), "仓库那份表情定义是要上服务器的"
+    assert {p.name for p in (out / "stickers").iterdir()} == {"傲娇+哼.png"}
+    left = {p.name for p in out.iterdir()}
+    assert left == {"stickers", "stickers_meta.json"}, "本机专属/敏感文件漏进部署包：" + str(left)

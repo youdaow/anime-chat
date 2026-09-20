@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from animechat import llm
 from animechat.config import load_settings, user_sticker_dir
 from animechat.emotion import EMOTION_KEYS
-from animechat.stickers import META_NAME, library
+from animechat.stickers import library
 
 QUARANTINE = user_sticker_dir().parent / "stickers_quarantine"
 MAX_SIDE = 768
@@ -116,12 +116,13 @@ async def tag_one(settings, path: Path, sem) -> dict:
 async def run(settings, files, concurrency, apply, delete_nonanime, full_total=0,
               force=False, flush_every=50):
     sem = asyncio.Semaphore(concurrency)
-    target_dir = user_sticker_dir()
-    meta_path = target_dir.parent / META_NAME
-    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    lib = library()
+    # 合并视图 + 拆分写回：qq* 那批的定义住在本机专属的 local meta 里，
+    # 直接读写仓库那份会把标签写到没人读的地方（下次合并时 local 那份赢）。
+    meta = lib.read_meta()
 
     def flush() -> None:
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        lib.write_meta(meta)
 
     # 断点续跑：apply 且未 --force 时，跳过 meta 里已标过 anime 的。跑一半断了重跑能续上。
     if apply and not force:
@@ -137,7 +138,8 @@ async def run(settings, files, concurrency, apply, delete_nonanime, full_total=0
             print(f"跳过已打标 {skipped} 张（续跑；要全部重标加 --force）")
         total = len(files)
         if total:
-            shutil.copy2(meta_path, meta_path.with_name(META_NAME + ".bak-" + time.strftime("%Y%m%d%H%M%S")))
+            for bak in lib.backup_meta():
+                print(f"已备份 meta -> {bak.name}")
     total = len(files)
 
     done = {"n": 0, "anime": 0, "nonanime": 0, "err": 0, "sec_sum": 0.0}

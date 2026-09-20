@@ -12,6 +12,7 @@ import hashlib
 import json
 import random
 import re
+import shutil
 import time
 import unicodedata
 from pathlib import Path
@@ -254,10 +255,39 @@ class StickerLibrary:
 
     def _write_meta(self, meta: dict) -> None:
         shared, local = self._split(meta)
-        self.meta_path.write_text(json.dumps(shared, ensure_ascii=False, indent=2), encoding="utf-8")
+        # newline="\n" 不是讲究：Windows 上 write_text 默认把 \n 翻成 \r\n，而这个文件
+        # 是 git 跟踪的、.gitattributes 里写死了 eol=lf —— 于是每动一次表情库，仓库那份
+        # 就整篇换行符不一致，git status 永远报「已修改」，谁也不知道改没改（踩过）。
+        self.meta_path.write_text(json.dumps(shared, ensure_ascii=False, indent=2),
+                                  encoding="utf-8", newline="\n")
         lp = self.local_meta_path
         if local or lp.is_file():        # 没有本机专属条目时不造空文件
-            lp.write_text(json.dumps(local, ensure_ascii=False, indent=2), encoding="utf-8")
+            lp.write_text(json.dumps(local, ensure_ascii=False, indent=2),
+                          encoding="utf-8", newline="\n")
+
+    # -------------------------------------------- 脚本入口（别自己 json.load 单个文件）
+    def read_meta(self) -> dict:
+        """两份文件合并后的完整视图。
+
+        批量脚本必须走这里：qq* 那批定义现在住在 local 文件里，直接 json.load
+        `stickers_meta.json` 会读到一份缺了那批的 meta，然后整个覆盖写回 ——
+        打好的视觉标签就这么没了。"""
+        return self._meta()
+
+    def write_meta(self, meta: dict) -> None:
+        """按归属拆成两份落盘（进仓库的那半 / 只留本机的那半）。"""
+        self._write_meta(meta)
+
+    def backup_meta(self) -> list[Path]:
+        """两份文件各存一份带时间戳的备份，返回备份路径。调用方自己 print 出来。"""
+        stamp = time.strftime("%Y%m%d%H%M%S")
+        done: list[Path] = []
+        for p in (self.meta_path, self.local_meta_path):
+            if p.is_file():
+                dest = p.with_name(p.name + ".bak-" + stamp)
+                shutil.copy2(p, dest)
+                done.append(dest)
+        return done
 
     def migrate_meta_split(self) -> bool:
         """老仓库只有一个 stickers_meta.json，里面混着 qq 那批的定义和 __uses__。
