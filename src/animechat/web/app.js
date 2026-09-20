@@ -300,13 +300,16 @@ function renderChatList() {
   const q = sideQuery();
   const { seen, unread } = chatRows();
   const lastOf = (char) => seen[char.id] || { at: char.last_at || 0, text: char.last_preview || "" };
+  // 只列聊过的人。没聊过的角色在这里出现，这一页就又变成了一份通讯录 ——
+  // 两页给同一堆名字看，分工等于没有。要找人开聊去「联系人」。
   const chars = state.characters
+    .filter((c) => lastOf(c).at > 0)
     .filter((c) => matchesQuery(q, [c.name, c.title, (c.tags || []).join(" ")]))
     .slice()
     .sort((a, b) => lastOf(b).at - lastOf(a).at || String(a.name).localeCompare(String(b.name), "zh"));
   clear(box);
   if (!chars.length) {
-    box.appendChild(el("div", { class: "pill", text: q ? "没有匹配「" + q + "」的角色" : "还没有角色，到「联系人」页加一个" }));
+    box.appendChild(el("div", { class: "pill", text: q ? "没有匹配「" + q + "」的聊天" : "还没有聊天，到「联系人」点一个人开始" }));
     return;
   }
   for (const char of chars) {

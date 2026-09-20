@@ -393,6 +393,9 @@ def test_chat_list_row_shows_preview_time_and_unread():
     list_fn = app[app.index("function renderChatList("):app.index("function renderContacts(")]
     assert "fmtAgo(" in list_fn, "没有时间列就不是微信那个形状"
     assert "unread-count" in list_fn and "openThreadFor(" in list_fn, "点一行要进聊天"
+    # 这一页只列聊过的人。把没聊过的角色也铺进来，它就和「联系人」是同一堆名字，
+    # 两页分工再次塌掉（用户原话：对话和联系人的用处是一样的）。
+    assert "lastOf(c).at > 0" in list_fn, "对话页不许列没聊过的角色"
     # 首屏：initTabs() 跑的时候会话还没加载，只靠切页时画一次汇总红点，
     # 会出现「行上亮着 2、选项卡写着 0」。bootstrap 落地后必须再刷一次。
     boot = app[app.index("async function loadBootstrap("):app.index("async function loadConversations(")]
