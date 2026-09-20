@@ -26,6 +26,17 @@ from .emotion import match_words, norm as emo_norm
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 META_NAME = "stickers_meta.json"
+# 本机才有的那部分：QQ 导入的表情（图被 .gitignore 的 data/stickers/qq* 排除，永不进仓库）
+# 的定义，以及每张图被用过几次。它们和「表情定义」不是一类东西 —— 换台机器根本
+# 没有那些图，把 1613 条指向不存在文件的条目提交进仓库，只会让工作区永远脏着。
+LOCAL_META_NAME = "stickers_meta.local.json"
+# 前缀表和 .gitignore 里那条 data/stickers/qq* 一一对应，改一边记得改另一边
+LOCAL_ONLY_PREFIXES = ("qq",)
+
+
+def is_local_only(filename: str) -> bool:
+    """这张图的定义该不该只留在本机。"""
+    return str(filename or "").startswith(LOCAL_ONLY_PREFIXES)
 
 # ------------------------------------------------------------------ 标记解析
 # 协议标记：[sticker:标签] / [表情：开心] / ［贴纸：xxx］ 等。
@@ -170,25 +181,92 @@ class StickerLibrary:
         self.items: dict[str, Sticker] = {}
         self.files: dict[str, Path] = {}
         self._mtime: float = 0.0
+        self.migrate_meta_split()
         self.refresh()
 
     # ---------------------------------------------------------- 载入
     @property
     def meta_path(self) -> Path:
+        """跟着仓库走的那半：表情定义 + 内置图的覆盖。"""
         return user_sticker_dir().parent / META_NAME
 
-    def _meta(self) -> dict:
-        p = self.meta_path
-        if not p.is_file():
+    @property
+    def local_meta_path(self) -> Path:
+        """只留在本机的那半：qq* 那批图（不进仓库）的定义 + 使用次数。"""
+        return user_sticker_dir().parent / LOCAL_META_NAME
+
+    @staticmethod
+    def _read(path: Path) -> dict:
+        if not path.is_file():
             return {}
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
         return data if isinstance(data, dict) else {}
 
+    @staticmethod
+    def _split(meta: dict) -> tuple[dict, dict]:
+        """一份内存里的 meta → （进仓库的那半, 只留本机的那半）。
+
+        三条规则：`__uses__` 是本机统计，永远本地；每个文件条目里的 `uses` 字段也剥进
+        `__uses__`（不然每发一张图就把仓库那份改一次）；文件名撞上 qq* 前缀的（图本来
+        就不进仓库）留在本地，其余进仓库。`__builtin_overrides__` 属于内置图，内置图在
+        包里，所以它必然走仓库那半。"""
+        shared: dict = {}
+        local: dict = {}
+        raw_uses = meta.get("__uses__")
+        uses = dict(raw_uses) if isinstance(raw_uses, dict) else {}
+        for key, value in meta.items():
+            if key == "__uses__":
+                continue
+            if isinstance(value, dict) and "uses" in value:
+                value = dict(value)
+                count = value.pop("uses")
+                if count:
+                    uses[key] = count
+            if key == "__builtin_overrides__" or not is_local_only(key):
+                shared[key] = value
+            else:
+                local[key] = value
+        if uses:
+            local["__uses__"] = uses
+        return shared, local
+
+    def _meta(self) -> dict:
+        merged = dict(self._read(self.meta_path))
+        # 本机那半盖过去：拆开之后两边本该互不重叠，万一重叠（拆到一半被中断）
+        # 以 local 为准 —— 它是更新的那次写入。
+        merged.update(self._read(self.local_meta_path))
+        # 写入时从文件条目里剥出去的 uses 放回原处，让 refresh()/patch() 看到的
+        # 形状和拆分以前一样（内置表情的条目不在这里，它按 sid 直接读 __uses__）。
+        uses = merged.get("__uses__")
+        if isinstance(uses, dict):
+            for name, count in uses.items():
+                entry = merged.get(name)
+                if isinstance(entry, dict) and not entry.get("uses"):
+                    entry["uses"] = count
+        return merged
+
     def _write_meta(self, meta: dict) -> None:
-        self.meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        shared, local = self._split(meta)
+        self.meta_path.write_text(json.dumps(shared, ensure_ascii=False, indent=2), encoding="utf-8")
+        lp = self.local_meta_path
+        if local or lp.is_file():        # 没有本机专属条目时不造空文件
+            lp.write_text(json.dumps(local, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def migrate_meta_split(self) -> bool:
+        """老仓库只有一个 stickers_meta.json，里面混着 qq 那批的定义和 __uses__。
+           第一次加载就把它拆开，否则那些条目要等到下次有人改标签才走 —— 而在那之前
+           工作区一直是「已修改」，谁也不知道该不该提交。"""
+        old = self._read(self.meta_path)
+        if not old or self.local_meta_path.is_file():
+            return False
+        _shared, local = self._split(old)
+        if not local:
+            return False
+        self._write_meta(old)
+        return True
 
     def refresh(self) -> None:
         items: dict[str, Sticker] = {}
@@ -291,7 +369,7 @@ class StickerLibrary:
     def maybe_refresh(self) -> bool:
         """库里文件被外部改动时重扫：用户往 data/stickers 丢图、或 build-assets 新长出内置图。"""
         newest = 0.0
-        for p in (self.meta_path, STICKER_MANIFEST):
+        for p in (self.meta_path, self.local_meta_path, STICKER_MANIFEST):
             try:
                 newest = max(newest, p.stat().st_mtime)
             except OSError:

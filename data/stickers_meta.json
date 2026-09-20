@@ -1,15 +1,4 @@
 {
-  "__uses__": {
-    "lianhe": 4,
-    "tietie": 10,
-    "aixin": 2,
-    "kun": 1,
-    "jiayou": 3,
-    "deyi": 2,
-    "wuyu": 2,
-    "qiuqiu": 1,
-    "tsun": 1
-  },
   "__builtin_overrides__": {
     "tietie": {
       "hidden": true
@@ -128,7 +117,6 @@
     ],
     "note": "得意地命令对方叫自己主人",
     "origin": "upload",
-    "uses": 9,
     "sha1": "31120c65a0"
   },
   "p03.webp": {
@@ -143,8 +131,7 @@
     ],
     "note": "没听懂、满脑子疑问时",
     "origin": "upload",
-    "sha1": "7d9cc6b4cd",
-    "uses": 3
+    "sha1": "7d9cc6b4cd"
   },
   "p04.jpg": {
     "label": "这样不太好吧",
@@ -157,7 +144,6 @@
     ],
     "note": "对方说过分的话，红着脸委婉拒绝",
     "origin": "upload",
-    "uses": 2,
     "sha1": "95328b5dbd"
   },
   "p05.webp": {
@@ -172,8 +158,7 @@
     ],
     "note": "被吓到、听到离谱消息时",
     "origin": "upload",
-    "sha1": "e5c73b1ebc",
-    "uses": 1
+    "sha1": "e5c73b1ebc"
   },
   "p06.webp": {
     "label": "拿锤子警告",
@@ -187,7 +172,6 @@
     ],
     "note": "假装要揍人、半威胁地提醒对方",
     "origin": "upload",
-    "uses": 3,
     "sha1": "b7e0264872"
   },
   "p07.webp": {
@@ -218,7 +202,6 @@
     ],
     "note": "冷冷地看着对方，不想搭理",
     "origin": "upload",
-    "uses": 13,
     "sha1": "b45f01c38f",
     "defined": "auto"
   },
@@ -233,8 +216,7 @@
     ],
     "note": "对方说了很无语的话，静静看着他",
     "origin": "upload",
-    "sha1": "1e008207da",
-    "uses": 1
+    "sha1": "1e008207da"
   },
   "p10.webp": {
     "label": "无语凝视·2",
@@ -273,7 +255,6 @@
     ],
     "note": "被撩到，紧张害羞咬着手指",
     "origin": "upload",
-    "uses": 7,
     "sha1": "f342f4307e"
   },
   "p13.webp": {
@@ -287,8 +268,7 @@
     ],
     "note": "和对方亲密依偎贴在一起",
     "origin": "upload",
-    "sha1": "4b06043b21",
-    "uses": 1
+    "sha1": "4b06043b21"
   },
   "p14.webp": {
     "label": "色诱",
@@ -315,7 +295,6 @@
     ],
     "note": "强行把对方和自己凑成一对",
     "origin": "upload",
-    "uses": 4,
     "sha1": "59018ca1e2"
   },
   "p16.webp": {
@@ -330,8 +309,7 @@
     ],
     "note": "不太认同但勉强夸一句",
     "origin": "upload",
-    "sha1": "7a3755886a",
-    "uses": 1
+    "sha1": "7a3755886a"
   },
   "p17.webp": {
     "label": "啵啵亲亲",
@@ -357,7 +335,6 @@
     ],
     "note": "嫌弃地斜眼看对方",
     "origin": "upload",
-    "uses": 14,
     "sha1": "2a1f0524b5"
   },
   "p19.webp": {
@@ -371,8 +348,7 @@
     ],
     "note": "认真记下对方说的话",
     "origin": "upload",
-    "sha1": "05add972da",
-    "uses": 1
+    "sha1": "05add972da"
   },
   "p20.webp": {
     "label": "气到冒烟",
@@ -385,7 +361,6 @@
     ],
     "note": "真的被气到，头顶冒烟",
     "origin": "upload",
-    "uses": 4,
     "sha1": "9951fb4c3c"
   },
   "p21.webp": {
@@ -425,8 +400,7 @@
     ],
     "note": "被夸到害羞心动，红着脸笑",
     "origin": "upload",
-    "sha1": "19076f32b6",
-    "uses": 2
+    "sha1": "19076f32b6"
   },
   "p24.webp": {
     "label": "冷淡女仆",
@@ -457,7 +431,6 @@
     ],
     "note": "眼巴巴求对方答应自己",
     "origin": "upload",
-    "uses": 5,
     "sha1": "ce1400dc02"
   },
   "p26.webp": {
@@ -484,7 +457,6 @@
     ],
     "note": "把什么东西递给对方、要对方收下",
     "origin": "upload",
-    "uses": 6,
     "sha1": "51c8a4b8a2"
   },
   "p28.webp": {
@@ -498,8 +470,7 @@
     ],
     "note": "温柔满足地笑看着对方",
     "origin": "upload",
-    "sha1": "6bcf4dcfb3",
-    "uses": 2
+    "sha1": "6bcf4dcfb3"
   },
   "p29.webp": {
     "label": "委屈趴桌",
@@ -525,8 +496,7 @@
     ],
     "note": "抱着猫一起哭，惨兮兮",
     "origin": "upload",
-    "sha1": "12943f683a",
-    "uses": 1
+    "sha1": "12943f683a"
   },
   "p31.webp": {
     "label": "别草我",
@@ -539,7 +509,6 @@
     ],
     "note": "求对方放过自己，哭喊",
     "origin": "upload",
-    "uses": 2,
     "sha1": "2ebc0dcf77"
   },
   "p32.webp": {
@@ -553,7 +522,6 @@
     ],
     "note": "装小卖萌甩锅，装作不懂事",
     "origin": "upload",
-    "uses": 3,
     "sha1": "0c0348017d"
   },
   "p33.webp": {
@@ -593,8 +561,7 @@
     ],
     "note": "得意地坏笑、占到便宜了",
     "origin": "upload",
-    "sha1": "b8eea4349d",
-    "uses": 1
+    "sha1": "b8eea4349d"
   },
   "p36.webp": {
     "label": "绿发呆滞",
@@ -663,7 +630,6 @@
     ],
     "note": "双手交握，满足地期待好事发生",
     "origin": "upload",
-    "uses": 2,
     "sha1": "a7e98e548b"
   },
   "p41.webp": {
@@ -677,8 +643,7 @@
     ],
     "note": "暗中观察、偷看对方动静",
     "origin": "upload",
-    "sha1": "c08de1a151",
-    "uses": 1
+    "sha1": "c08de1a151"
   },
   "p42.jpg": {
     "label": "金发不爽",
@@ -691,7 +656,6 @@
     ],
     "note": "不爽地瞪着对方",
     "origin": "upload",
-    "uses": 1,
     "sha1": "aed9f3d991"
   },
   "p43.webp": {
@@ -705,7 +669,6 @@
     ],
     "note": "直球骚话，大胆撩对方",
     "origin": "upload",
-    "uses": 3,
     "sha1": "fcebeeec14"
   },
   "p44.webp": {
@@ -732,8 +695,7 @@
     ],
     "note": "懵了，举手投降",
     "origin": "upload",
-    "sha1": "f643231cba",
-    "uses": 1
+    "sha1": "f643231cba"
   },
   "p46.webp": {
     "label": "这谁顶得住啊",
@@ -746,8 +708,7 @@
     ],
     "note": "对方太有魅力，自己顶不住",
     "origin": "upload",
-    "sha1": "5e9ce0f054",
-    "uses": 1
+    "sha1": "5e9ce0f054"
   },
   "p47.webp": {
     "label": "贴脸闺蜜",
@@ -773,7 +734,6 @@
     ],
     "note": "俏皮地眨一下眼",
     "origin": "upload",
-    "uses": 5,
     "sha1": "463dcb243e"
   },
   "p49.webp": {
@@ -801,7 +761,6 @@
     ],
     "note": "听到意外的话当场愣住",
     "origin": "upload",
-    "uses": 2,
     "sha1": "45ee1467b9"
   },
   "p51.webp": {
@@ -828,7 +787,6 @@
     ],
     "note": "生气地说「我记下了」",
     "origin": "upload",
-    "uses": 1,
     "sha1": "a52e666c94"
   },
   "p53.webp": {
@@ -842,8 +800,7 @@
     ],
     "note": "上头了，当场要把两人凑一对",
     "origin": "upload",
-    "sha1": "0f20aaa3a5",
-    "uses": 1
+    "sha1": "0f20aaa3a5"
   },
   "p54.webp": {
     "label": "拍桌狂笑",
@@ -884,8 +841,7 @@
     "note": "https://p0.itc.cn/images01/20230702/b284e22577144f5daa67cc283fae3662.png",
     "created_at": 1789193544.2596467,
     "sha1": "66685f6552",
-    "defined": "auto",
-    "uses": 2
+    "defined": "auto"
   },
   "web-1789196186311-34e5900f68.jpg": {
     "tags": [
@@ -900,7 +856,6 @@
     "note": "https://i0.hdslb.com/bfs/article/4036cfdf7877d14d0e6ca33cfde1df28352074746.jpg",
     "created_at": 1789196186.317823,
     "sha1": "34e5900f68",
-    "uses": 2,
     "defined": "auto"
   },
   "web-1789196188394-e171664a59.jpg": {
@@ -931,7 +886,6 @@
     "note": "https://img.nga.178.com/attachments/mon_202304/20/-9lddQjsw-k5ltZcT3cSsg-sg.jpg",
     "created_at": 1789196191.1298048,
     "sha1": "4355032a88",
-    "uses": 1,
     "defined": "auto"
   },
   "web-1789196192171-57ff1ded4a.png": {
@@ -1022,8 +976,7 @@
     "note": "https://img.nga.178.com/attachments/mon_202304/20/-9lddQjsw-ji1hK23T3cSk0-mq.jpg",
     "created_at": 1789196197.9208598,
     "sha1": "4e7a4fe98a",
-    "defined": "auto",
-    "uses": 1
+    "defined": "auto"
   },
   "web-1789196198792-2d4e85a813.jpg": {
     "tags": [
@@ -1113,7 +1066,6 @@
     "note": "https://img.nga.178.com/attachments/mon_202304/20/-9lddQjsw-9o6hK2gT3cSlv-sg.jpg",
     "created_at": 1789196205.865051,
     "sha1": "10aa9c1d98",
-    "uses": 1,
     "defined": "auto"
   },
   "web-1789196208972-a88597812a.gif": {
@@ -1129,7 +1081,6 @@
     "note": "https://upload-bbs.miyoushe.com/upload/2023/06/17/175633142/b76c96f76ac2ad1f05fd2e09b6e9b6bd_321586246999452231.gif?x-oss-process=image/auto-orient,0/interlace,1/format,gif",
     "created_at": 1789196208.9806633,
     "sha1": "a88597812a",
-    "uses": 1,
     "defined": "auto"
   },
   "web-1789196211626-be3df5d6ce.jpg": {
@@ -1193,7 +1144,6 @@
     "origin": "url",
     "note": "https://img.166.net/reunionpub/3_20240110_18cf346b9d8267720.jpeg?imageView&tostatic=0&thumbnail=900y600",
     "created_at": 1789267975.5061288,
-    "sha1": "bf68fbf197",
-    "uses": 1
+    "sha1": "bf68fbf197"
   }
 }

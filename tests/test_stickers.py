@@ -112,3 +112,72 @@ def test_patch_builtin_writes_override_not_package_file():
     assert after_st.label == "改过的名字"
     assert (BUILTIN_STICKER_DIR / (builtin.id + ".png")).read_bytes() == before  # 包内文件没动
     lib.patch(builtin.id, favorite=builtin.favorite, label=builtin.label)
+
+
+# -------------------------------------------------- meta 拆分：仓库那半 / 本机那半
+def _meta_files():
+    from animechat.config import user_sticker_dir
+    from animechat.stickers import LOCAL_META_NAME, META_NAME
+    d = user_sticker_dir().parent
+    return d / META_NAME, d / LOCAL_META_NAME
+
+
+def _read(path):
+    import json
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+
+
+def test_qq_sticker_meta_stays_out_of_the_shared_file():
+    """qq 那批图被 .gitignore 排除、永不进仓库，它们的定义也不该进 stickers_meta.json。
+       混在一起的结果是仓库里堆上千条指向不存在文件的条目，工作区永远显示「已修改」。"""
+    make_png(None, "qq商店-abc.png")
+    make_png(None, "傲娇+哼.png")
+    lib = StickerLibrary()
+    for st in list(lib.items.values()):
+        lib.patch(st.id, label=st.label or "改名")
+    shared_path, local_path = _meta_files()
+    shared, local = _read(shared_path), _read(local_path)
+    qq_in_shared = [k for k in shared if k.startswith("qq")]
+    assert not qq_in_shared, "qq 的定义漏进了仓库那份：" + str(qq_in_shared[:3])
+    assert any(k.startswith("qq") for k in local), "qq 的定义该留在本机那份"
+    assert any(not k.startswith("__") for k in shared), "普通（联网抓的）表情定义仍要跟仓库走"
+
+
+def test_use_counts_land_in_the_local_file_only():
+    """被用过几次是本机统计，不是表情定义：换台机器这数字毫无意义，而且每发一张图
+       就改一次 —— 正是「仓库那份常驻已修改」的另一半来源（qq 那批是最大的一半）。"""
+    make_png(None, "公开图.png")
+    lib = StickerLibrary()
+    st = next(s for s in lib.items.values() if s.origin != "builtin")
+    lib.use(st.id)
+    shared, local = (_read(p) for p in _meta_files())
+    name = lib.files[st.id].name
+    assert "__uses__" not in shared, "使用次数不许进仓库那份"
+    assert (local.get("__uses__") or {}).get(name) == st.uses, "次数该按文件名记在本机那份里"
+    assert "uses" not in (shared.get(name) or {}), "仓库那份的条目里不该留 uses 字段"
+    # 读回来形状不变，选图加权（按 -uses 排）才不受拆分影响
+    assert lib.get(st.id).uses == st.uses
+
+
+def test_legacy_single_meta_file_is_split_on_load():
+    """老库只有一个文件、里面混着两类数据。第一次加载就该拆开，否则要等到谁去改标签
+       才动 —— 在那之前工作区一直脏着，而且没人知道那 1613 条是哪来的。"""
+    import json
+    shared_path, local_path = _meta_files()
+    assert not local_path.exists()
+    shared_path.write_text(json.dumps({
+        "__uses__": {"tsun": 3},
+        "__builtin_overrides__": {"tsun": {"hidden": False}},
+        "qq收到-xyz.png": {"label": "杂鱼", "tags": ["杂鱼"], "emotion": "tsundere"},
+        "公开图.png": {"label": "抱抱", "tags": ["抱抱"], "emotion": "love"},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    assert StickerLibrary().migrate_meta_split() is not None   # 构造时已经拆过
+    shared, local = _read(shared_path), _read(local_path)
+    assert "qq收到-xyz.png" not in shared and "qq收到-xyz.png" in local
+    assert "__uses__" not in shared and "__uses__" in local
+    assert "__builtin_overrides__" in shared, "内置图的覆盖属于包里那张图，要跟仓库走"
+    assert "公开图.png" in shared
+    # 拆完内存里还得能看见全部（合并读）
+    lib = StickerLibrary()
+    assert lib._meta().get("qq收到-xyz.png", {}).get("label") == "杂鱼"
