@@ -174,8 +174,11 @@ def test_three_pages_share_one_tabbar():
     for page_id in ("page-chat", "page-contacts", "page-me"):
         assert 'id="%s"' % page_id in HTML, "缺页面容器：" + page_id
 
-    # 注释里允许提这些名字（那段历史正是这里要防着重演的原因），规则 / 标记里不许有
+    # 注释里允许提这些名字（那段历史正是这里要防着重演的原因），规则 / 标记里不许有。
+    # 例外：translateX(100%) 现在只许出现在推入转场的关键帧里 —— 那是播 300ms 的位移，
+    # 不是「页面平时停在屏幕外、靠类切可见」的布局状态。先把那几行摘掉再扫。
     css_rules = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
+    css_rules = "\n".join(l for l in css_rules.splitlines() if not l.lstrip().startswith("@keyframes page-"))
     html_tags = re.sub(r"<!--.*?-->", "", HTML, flags=re.S)
     gone = ("show-chat", "translateX(100%)", "btn-back", "btn-collapse", "data-wide",
             "back-btn", ".sidebar", ".side-nav", "data-panel=")
@@ -432,6 +435,36 @@ def test_pushed_pages_cover_the_tabbar():
         "名片的 ← 要回联系人"
     stack = app[app.index("const PUSH_ROOT ="):app.index("function switchTab(")]
     assert 'thread: "chat", card: "contacts"' in stack, "推入页要说清自己属于哪个栏，tab 才继续亮着"
+
+
+def test_entering_a_pushed_page_slides_it_in():
+    """点角色进聊天要有转场，而且整块画面一起走：新页从右边推进来，旧页那一栏（页面 +
+       底部选项卡）往左让开并压暗，← 反过来。
+       两处时长必须对齐 —— JS 的 SLIDE_MS 是 animationend 不来时的兜底藏页时机，
+       CSS 才是真正在播的那个；JS 比 CSS 短的话，动画还在播旧页就被藏了，画面跳一下。"""
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    js_ms = re.search(r"const SLIDE_MS = (\d+);", app)
+    assert js_ms, "app.js 里要有一个 SLIDE_MS，兜底藏旧页的时间才说得清"
+    dur = re.search(r"animation-duration: ([.\d]+)s;", CSS)
+    assert dur, "转场时长在 CSS 里写一处就好（页面和选项卡共用同一个块）"
+    assert float(dur.group(1)) * 1000 <= int(js_ms.group(1)), \
+        "动画播 " + dur.group(1) + "s，但 JS 在 " + js_ms.group(1) + "ms 就把旧页藏了"
+    for rule, kf in ((".page.push-in", "page-push-in"), (".page.push-out", "page-push-out"),
+                     (".page.back-in", "page-back-in"), (".page.back-out", "page-back-out"),
+                     (".tabbar.push-out", "page-push-out"), (".tabbar.back-in", "page-back-in")):
+        assert "@keyframes " + kf + " {" in CSS, "缺关键帧：" + kf
+        assert rule + " { animation-name: " + kf + "; }" in CSS, "缺转场规则：" + rule + " → " + kf
+    # 选项卡以前不参与：返回时底下那条钉着不动，看着像两张没拼上的图
+    assert "if (bar) moving.push([bar, rootCls])" in app, "底部选项卡要跟着它那一栏的根页一起动"
+    # 只有「进推入页 / 退回栏根」两种情况有位移，切选项卡不许有
+    assert 'PUSH_ROOT[name] ? "push" : (PUSH_ROOT[from] ? "back" : "")' in app, \
+        "转场方向要按推入页判定，切栏不该播位移"
+    assert "prefers-reduced-motion" in app, \
+        "有晕动偏好时要在 JS 里就不播 —— 光靠 CSS 关掉动画，animationend 不会来，旧页藏不掉"
+    assert "prevEl.hidden = false" in app, "动画期间旧页得留在屏上，否则只看见新页凭空出现"
+    app_rule = CSS.split("#app { display: grid;")[1].split("}")[0]
+    assert "overflow: hidden" in app_rule, \
+        "新页有一帧整页停在 translateX(100%)，#app 不裁掉会闪出一条横向滚动条"
 
 
 def test_picker_hint_matches_the_real_default_source():

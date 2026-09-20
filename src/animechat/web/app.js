@@ -67,7 +67,40 @@ const PUSH_ROOT = { thread: "chat", card: "contacts" };
 
 function currentTab() { return PUSH_ROOT[state.page] || (TABS.indexOf(state.page) >= 0 ? state.page : "chat"); }
 
+/* 转场：整块画面一起走。进 → 新页从右边推进来，旧页那一栏（页面 + 底部选项卡）往左
+   让开并压暗；退 → 反过来。选项卡必须跟着它所属的那一栏动：以前只有页面在动、选项卡
+   钉在原地，返回时那 95px 像另一张没参与拼接的图。
+   只给「推入 / 退回」播，切选项卡不播 —— 微信也没给底部切换加位移，加了像翻页。
+   时长和 style.css 里那个 animation-duration 对齐：JS 的 SLIDE_MS 是 animationend
+   不来时的兜底藏页时机，比动画短就会「还在播，旧页已经被藏了」。 */
+const SLIDE_MS = 300;
+let slideSeq = 0;
+
+function slidePages(prevEl, nextEl, dir) {
+  const mine = ++slideSeq;
+  const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!prevEl || !nextEl || prevEl === nextEl || !dir || reduce) return;
+  prevEl.hidden = false;        // showPage 刚把它藏了，动画这几帧得让它留在屏上
+  // 推入页是全屏的，本来就把选项卡盖住；会动的那个选项卡永远属于「栏根」那一侧
+  const rootCls = dir === "push" ? "push-out" : "back-in";
+  const pushCls = dir === "push" ? "push-in" : "back-out";
+  const moving = [[prevEl, dir === "push" ? rootCls : pushCls],
+                  [nextEl, dir === "push" ? pushCls : rootCls]];
+  const bar = qs("tabbar");
+  if (bar) moving.push([bar, rootCls]);
+  for (const [el, cls] of moving) el.classList.add(cls);
+  const settle = () => {
+    if (mine !== slideSeq) return;              // 中途又切了页：让最后那次说了算
+    prevEl.hidden = true;
+    for (const [el, cls] of moving) el.classList.remove(cls);
+  };
+  nextEl.addEventListener("animationend", settle, { once: true });
+  // 页面在后台时动画根本不跑，animationend 不会来；不兜底旧页就永久糊在屏幕上
+  setTimeout(settle, SLIDE_MS + 200);
+}
+
 function showPage(name) {
+  const from = state.page;
   state.page = name;
   const app = document.getElementById("app");
   if (app) app.dataset.page = name;
@@ -78,6 +111,8 @@ function showPage(name) {
     btn.setAttribute("aria-current", on ? "page" : "false");
   }
   for (const page of document.querySelectorAll(".page")) page.hidden = page.id !== "page-" + name;
+  slidePages(document.getElementById("page-" + from), document.getElementById("page-" + name),
+             PUSH_ROOT[name] ? "push" : (PUSH_ROOT[from] ? "back" : ""));
   paintTabBadge();
   if (name === "thread") paintNewMessages();
   if (name === "me") mountMePage();

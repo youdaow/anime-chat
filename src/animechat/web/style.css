@@ -108,7 +108,7 @@ button { cursor: pointer; border: 0; background: none; }
 /* grid 项的默认 min-height:auto 会被内容撑破：会话一长，聊天页就长成整页高度，
    body（overflow:hidden）被 focus 滚到底，整块界面滚出屏幕且用户滚不回来。
    行高必须锁死在 1fr，每一页各自内部滚动。 */
-#app { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; height: 100vh; gap: 0; touch-action: pan-x pan-y; }
+#app { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; height: 100vh; gap: 0; overflow: hidden; touch-action: pan-x pan-y; }
 
 /* ------------------------------------------------------------------ 页面 */
 /* 三个页面叠在同一格，靠 hidden 决定谁在屏幕上：桌面和手机是同一套结构
@@ -134,6 +134,33 @@ button { cursor: pointer; border: 0; background: none; }
 /* 推入页：聊天和名片从栏里点进来，占满整格（连第二行的选项卡一起盖住），
    所以聊天时看不见 tab —— 跟微信一致。z-index 保证它压在同格的列表页上面。 */
 .push { grid-row: 1 / -1; z-index: 4; box-shadow: var(--shadow-pop); }
+
+/* 推入 / 退回的转场。整块画面一起走：新页从右边推进来，旧页那一栏（页面 + 它脚下的
+   底部选项卡）往左让开并压暗；← 反过来。选项卡以前钉在原地不动，返回时看着像两张
+   不相干的图在拼 —— 它属于那一栏，就必须跟着那一栏走。
+   只动 transform/opacity（合成器上跑，不触发布局）。
+   时长/曲线两处共用一个块，别再出现「页面和选项卡不同步」。
+   cubic-bezier(.32,.72,0,1)：起步快、尾巴长，是「推到位置后停住」的手感；
+   之前那条 .22/.61 收尾太急，观感接近匀速推到底再急停。
+   #app 那句 overflow 是配套：新页有一帧整页停在 translateX(100%)，
+   不裁掉就会在桌面上闪一条横向滚动条。 */
+@keyframes page-push-in { from { transform: translateX(100%); } to { transform: none; } }
+@keyframes page-push-out { from { transform: none; opacity: 1; } to { transform: translateX(-24%); opacity: .45; } }
+@keyframes page-back-in { from { transform: translateX(-24%); opacity: .45; } to { transform: none; opacity: 1; } }
+@keyframes page-back-out { from { transform: none; } to { transform: translateX(100%); } }
+.page.push-in, .page.push-out, .page.back-in, .page.back-out,
+.tabbar.push-out, .tabbar.back-in {
+  animation-duration: .3s;
+  animation-timing-function: cubic-bezier(.32, .72, 0, 1);
+  animation-fill-mode: both;
+  will-change: transform, opacity;
+}
+.page.push-in { animation-name: page-push-in; }
+.page.push-out { animation-name: page-push-out; }
+.page.back-in { animation-name: page-back-in; }
+.page.back-out { animation-name: page-back-out; }
+.tabbar.push-out { animation-name: page-push-out; }
+.tabbar.back-in { animation-name: page-back-in; }
 .thread-back {
   flex: none; width: 38px; height: 38px; border-radius: 10px; font-size: 22px; line-height: 1;
   color: var(--text-soft); background: transparent; border: 1px solid transparent;
