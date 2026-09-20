@@ -383,6 +383,23 @@ def test_js_only_reaches_for_ids_that_exist():
         assert not missing, name + " 里这些 qs() 指向不存在的元素：" + "、".join(missing)
 
 
+def test_row_badge_only_counts_the_conversation_a_tap_opens():
+    """红点按人累加所有会话、点进去却固定进单聊 —— 飞书群里那 2 条在网页上既打不开也
+       清不掉，就是用户报的「点进去查看后红点还在」（实测：丛雨行上挂 2，两条都在
+       id=69 那个飞书群，她的单聊未读是 0）。
+       现在「点一行会进哪条」只有 rowConv 一个出处，红点、点击、汇总三处共用同一口径。"""
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    res = app[app.index("function rowConv("):app.index("function chatRows(")]
+    assert "ids.length !== 1" in res, "rowConv 只认单聊：群聊不许抢走 1 对 1 的入口"
+    assert "convUnread(rowConv(pid))" in app, "行上的红点要按 rowConv 那条会话算"
+    paint = app[app.index("function paintTabBadge("):app.index("function initTabs(")]
+    assert "chatRows()" in paint, "「对话」上的汇总红点不许自己再把所有会话加一遍"
+    assert "n += convUnread(conv)" not in paint, "汇总口径又跑出去了：行上没点、选项卡还挂着数"
+    for fn in ("function openThreadFor(", "function selectCharacter("):
+        at = app.index(fn)
+        assert "rowConv(cid)" in app[at:at + 640], fn + " 不许自己再筛一遍单聊"
+
+
 def test_chat_list_row_shows_preview_time_and_unread():
     """「对话」页是微信式会话列表：一行一个人，副标题是最后一句，右上角是时间 + 红点。
        关键是数据要从 state.conversations 现算，不能拿角色视图里那份 —— 那份要整页
@@ -391,7 +408,7 @@ def test_chat_list_row_shows_preview_time_and_unread():
     assert 'id="chat-list"' in HTML, "对话页要有那个列表容器"
     rows = app[app.index("function chatRows("):app.index("function renderChatList(")]
     assert "for (const conv of state.conversations)" in rows, "预览/时间/未读都从会话表现算"
-    assert "convUnread(conv)" in rows and "conv.preview" in rows
+    assert "convUnread(rowConv(pid))" in rows and "conv.preview" in rows
     assert "replace(/\\s+/g" in rows, "预览里的真实换行要压成一行，不然列表行被撑歪"
     list_fn = app[app.index("function renderChatList("):app.index("function renderContacts(")]
     assert "fmtAgo(" in list_fn, "没有时间列就不是微信那个形状"

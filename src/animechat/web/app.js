@@ -125,12 +125,15 @@ function switchTab(name) {
   showPage(tab);   // 选项卡永远回到那一栏的根页：在聊天里点「对话」就是回列表
 }
 
-/* 「对话」上的红点 = 所有未读之和。列表行里每人还有一个自己的红点。 */
+/* 「对话」上的红点 = 列表里那些行的红点加起来，同一个口径（见 rowConv）。
+   以前它把所有会话的未读都加，连网页根本进不去的飞书群也算：于是行上没点、
+   选项卡上却挂着 2，还是清不掉。 */
 function paintTabBadge() {
   const badge = qs("tab-unread");
   if (!badge) return;
   let n = 0;
-  for (const conv of state.conversations) n += convUnread(conv);
+  const { unread } = chatRows();
+  for (const pid of Object.keys(unread)) n += unread[pid];
   badge.hidden = n <= 0;
   badge.textContent = fmtUnread(n);
 }
@@ -307,16 +310,29 @@ function markRead(id) {
   api("/api/conversations/" + id + "/read", { method: "POST" }).catch(() => { /* 静默 */ });
 }
 
+/* 一行「人」对应的那条会话：他最近的单聊。绝不能让群聊抢走单聊 —— 拉过群之后
+   点角色只会反复打开那个群，1 对 1 就再也进不去了（这条以前写在两个函数里，
+   现在只有这一个出处：红点、点进去、预览都从这儿算，才不会互相不认识）。 */
+function rowConv(cid) {
+  let hit = null;
+  for (const conv of state.conversations) {
+    const ids = convIds(conv);
+    if (ids.length !== 1 || ids[0] !== cid) continue;
+    if (!hit || (conv.updated_at || 0) > (hit.updated_at || 0)) hit = conv;
+  }
+  return hit;
+}
+
 /* 每个角色一行的数据：最后一句、什么时候、几条没看。
    算的是 state.conversations（发完消息会重拉），不是角色视图 —— 那份要整页
    bootstrap 才刷新，聊完一句回到列表还停在旧预览上，看着像没收到回复。
-   群聊摊到每个成员头上，跟后端 _char_views 同一套口径。 */
+   预览按人把所有会话（含群聊）里最近的一条算，跟后端 _char_views 同一套口径；
+   红点却只算 rowConv 那条 —— 点了进不去的会话，未读挂在那儿永远清不掉。 */
 function chatRows() {
   const seen = {};
   const unread = {};
   for (const conv of state.conversations) {
     for (const pid of convIds(conv)) {
-      unread[pid] = (unread[pid] || 0) + convUnread(conv);
       if (conv.updated_at && (!seen[pid] || conv.updated_at > seen[pid].at)) {
         // 预览是消息原文，角色回的是多条时里面带真实换行；列表一行只有一行高，
         // 换行不压掉会把整行撑歪。
@@ -324,6 +340,7 @@ function chatRows() {
       }
     }
   }
+  for (const pid of Object.keys(seen)) unread[pid] = convUnread(rowConv(pid));
   return { seen, unread };
 }
 
@@ -393,16 +410,14 @@ function renderContacts() {
   }
 }
 
-/* 点人 → 进聊天。群聊里也有他，但绝不能让群聊抢走单聊：拉过群之后点人只会
-   反复打开那个群，1 对 1 就再也进不去了。 */
+/* 点人 → 进聊天。进哪条由 rowConv 定（他最近的单聊），红点算的也是那条。 */
 async function openThreadFor(cid) {
   state.charId = cid;
-  const mine = state.conversations.filter((c) => convIds(c).indexOf(cid) >= 0);
-  const solo = mine.filter((c) => convIds(c).length === 1);
-  if (solo.length) {
-    await openConversation(solo[0].id);
+  const solo = rowConv(cid);
+  if (solo) {
+    await openConversation(solo.id);
     // openConversation 失败只 toast、不改 state.convId —— 那就别推一个空聊天上去
-    if (state.convId === solo[0].id) showPage("thread");
+    if (state.convId === solo.id) showPage("thread");
     return;
   }
   const before = state.convId;
@@ -520,12 +535,10 @@ function selectCharacter(cid, opts) {
     renderHead();
     return;
   }
-  /* 点一个人 = 想跟这个人单独聊。群聊里也有他，但绝不能让群聊抢走单聊：
-     否则拉过群之后点角色只会反复打开那个群，1 对 1 再也进不去了。
+  /* 点一个人 = 想跟这个人单独聊，进哪条由 rowConv 定（群聊不许抢走单聊）。
      切到对话页由点进来的那一方负责——boot 恢复上次会话时不该顺手改页。 */
-  const mine = state.conversations.filter((c) => convIds(c).indexOf(cid) >= 0);
-  const solo = mine.filter((c) => convIds(c).length === 1);
-  if (solo.length) openConversation(solo[0].id);
+  const solo = rowConv(cid);
+  if (solo) openConversation(solo.id);
   else newConversation(cid);   // 一句都没聊过，先给他建一条
 }
 
