@@ -494,3 +494,17 @@ def test_picker_hint_matches_the_real_default_source():
     for word in ("Tenor Key", "Giphy Key"):
         assert word not in JS, "整个前端都不该再要这两个 Key：" + word
     assert "默认走 DuckDuckGo" not in JS, "DuckDuckGo 是退路，不是默认"
+
+
+def test_context_budget_caps_below_the_smallest_model_window():
+    """上限从前端的 40000 降到 30000，理由是实测：这台网关的 free-best 是一条
+       fallback 链，链上最小的窗口只有 32,768 token（z-ai/glm-5.2:free），而中文
+       实测约 0.84 token/字 —— 40000 字就是 33,600 token，还没算不计进预算的人设
+       system prompt。拉满不是变慢，是整条路由 free_router_exhausted、这条回复直接失败。
+       所以数值得写在提示语里，否则下一个人只会把它拉回 40000。"""
+    panels = (WEB / "panels.js").read_text(encoding="utf-8")
+    line = [l for l in panels.splitlines() if l.strip().startswith("context: el(")]
+    assert line, "设置里那格上下文预算的输入框不见了"
+    assert 'max: "30000"' in line[0], "预算上限要卡在 30000 字（≈25k token）：" + line[0].strip()
+    assert 'max: "40000"' not in panels, "40000 字≈33.6k token，越过链上最小的 32k 窗口"
+    assert "30000 字约 25k token" in panels, "为什么是这个数，得写在提示语里"

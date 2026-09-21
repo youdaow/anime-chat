@@ -851,7 +851,7 @@ export async function renderSettings(ctx, host) {
     model: textInput(s.llm_model, { placeholder: (byKey[meKey] || {}).model_placeholder || "", list: "model-list" }),
     temperature: el("input", { type: "range", min: "0", max: "2", step: "0.05", value: String(s.llm_temperature) }),
     max_tokens: el("input", { type: "number", min: "64", max: "4000", value: String(s.llm_max_tokens) }),
-    context: el("input", { type: "number", min: "800", max: "40000", step: "200", value: String(s.context_chars) }),
+    context: el("input", { type: "number", min: "800", max: "30000", step: "200", value: String(s.context_chars) }),
     timeout: el("input", { type: "number", min: "10", max: "600", value: String(s.llm_timeout) }),
     thinking: select([["off", "关（最快，聊天推荐）"], ["low", "少想一点"], ["on", "开（模型默认，更慢）"]], s.llm_thinking),
     sticker_mode: select([["off", "关（只用模型主动发的）"], ["light", "克制（情绪明显才补图）"], ["rich", "积极（有情绪就上）"]], s.sticker_mode),
@@ -1021,7 +1021,7 @@ export async function renderSettings(ctx, host) {
       mockNote,
       el("div", { class: "grid-2" }, [
         field("最大回复 token", f.max_tokens),
-        field("上下文字符预算", f.context, "越大越记得住，也越慢越贵"),
+        field("上下文字符预算", f.context, "越大越记得住，也越慢越贵；30000 字约 25k token，再大就装不进小窗口模型（32k）"),
       ]),
       field("思考模式", f.thinking, "qwen3 / deepseek-r1 这类混合推理模型会先想几百字再开口：实测聊天里 84% 的生成量烧在没人看的思考上、平均 7.5s 一条，关掉约快一倍。不支持这个参数的模型会自动忽略（失败还会摘掉参数重试一次）。"),
       field("温度", f.temperature),
