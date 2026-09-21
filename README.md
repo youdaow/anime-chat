@@ -309,8 +309,11 @@ anime-chat/
 - 朋友拿到链接点开，看到的就是**一台新设备的空页面** —— 只有他自己的会话，看不见你的记录，
   也看不见别的访客。角色库和表情包是共享的（能读能聊）。不用提前给谁发任何东西。
 - 「我」那一整页（模型 Key、角色库、表情管理）对访客根本不画出来，服务端也一律 403。
-- **主人 = 你自己**，靠 `/login` 输一次口令认出来。口令在这套里只剩这一个用途：认出你本人 ——
+- **主人 = 你自己**，入口是「对话」页左上角那颗**「登录后台」**按钮 → 输一次口令。陌生人那一侧
+  这个按钮只写「登录后台」，不会提前露出"这里要口令"。口令在这套里只剩一个用途：认出你本人 ——
   只有库里的访客行能带 `admin`，匿名设备签名再对也拿不到。所以别把它写在任何公开的地方。
+- 你登录后那颗按钮会变成**「退出登录」**：点一下就退回一台全新访客的身份，方便你在自己手机上
+  看访客看到的样子（数据一条都不少，再点「登录后台」输口令就回来）。
 
 ```bash
 python -m animechat.cli invite add --admin 主人    # 给你自己发一个口令（默认随机 16 位，只存 scrypt 摘要）
@@ -397,7 +400,7 @@ cookie 的 `Secure` 跟着传输走，判据在 `server.request_is_https()`：�
 ## 开发
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q          # 448 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
+.venv\Scripts\python.exe -m pytest -q          # 450 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
 .venv\Scripts\python.exe -m animechat.cli doctor
 $env:ANIMECHAT_DEBUG=1; .venv\Scripts\python.exe -m animechat.cli run --reload
 ```

@@ -21,6 +21,9 @@
        点一行才进聊天，聊天是推入页（#page-thread），不是选项卡。 -->
   <main class="page page-chat on" id="page-chat">
     <header class="page-head">
+      <!-- 主人/访客这一个口子共用：访客看到「登录后台」，主人看到「退出登录」。
+           口令这件事不该出现在陌生人面前，所以登录页不给链接、只从这里进。 -->
+      <button id="btn-account" class="btn-lead" hidden></button>
       <h2>对话</h2>
       <span class="side-tools">
         <button id="btn-find-chat" title="挑一个人开聊">＋找人聊</button>

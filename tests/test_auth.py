@@ -458,6 +458,22 @@ def test_code_dash_reads_a_pipe_without_the_scary_getpass_warning(monkeypatch, c
     assert login(on(), "tong-guo-guan-dao-de-kou-ling").status_code == 200
 
 
+def test_logout_puts_the_host_back_in_the_guest_seat():
+    """他要能在自己手机上看到访客看到的样子：退出必须真的回到"一台新设备"，
+    而不是停在 401、也不是 cookie 没清掉还顶着主人身份。"""
+    _, code = make_visitor("要下去看看的主人", admin=True)
+    c = on()
+    assert login(c, code).status_code == 200
+    assert c.get("/api/bootstrap").json()["visitor"]["admin"] is True
+    assert c.post("/api/logout").status_code == 200
+    d = c.get("/api/bootstrap").json()
+    assert d["visitor"]["admin"] is False, "退出之后不该还是主人"
+    assert d["conversations"] == [], "退出之后该是一台全新设备的空页面"
+    # 再登回来，身份和会话都还在（退出没动任何数据）
+    assert login(c, code).status_code == 200
+    assert c.get("/api/bootstrap").json()["visitor"]["admin"] is True
+
+
 # ------------------------------------------------------------------ CLI
 def test_cli_invite_verbs_match_what_the_docs_say():
     """第一版把 name 做成裸位置参数（`invite 小明`），而 README / 帮助里写的是

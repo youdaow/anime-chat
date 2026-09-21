@@ -25,6 +25,14 @@ def test_host_only_entries_are_hidden_for_anonymous_devices():
     assert 'data-tab="me"' in JS, "「我」这一栏要能被藏掉"
 
 
+def test_the_admin_door_is_one_button_not_a_signposted_gate():
+    """口令是主人的事，不该在陌生人进来的第一屏露出「要口令」的样子；
+    同时主人也得有个口子下来 —— 他要能退出到访客视角去自查。"""
+    assert 'id="btn-account"' in HTML
+    assert "登录后台" in JS and "退出登录" in JS and '/api/logout' in JS
+    assert 'href="/login"' not in HTML, "主页面不许挂登录页链接，只留这一个按钮"
+
+
 def test_web_assets_are_revalidated():
     """前端没有版本号，必须每次回源校验，否则改了样式刷新还是旧的。"""
     from fastapi.testclient import TestClient

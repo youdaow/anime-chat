@@ -160,6 +160,20 @@ function initTabs() {
    表情包管理），访客点每一项都是 403 —— 入口宁删勿藏，也别留一个只会报错的面板。
    服务端本来就会挡（VISITOR_WRITE 白名单），这里只是不把门把手递过去。 */
 function applyHostOnly() {
+  const acct = qs("btn-account");
+  if (acct) {
+    // 一个口子两种身份：访客那边是"我要进后台"，主人这边是"我要出去看看访客看到什么"。
+    // 退出后重新加载会拿到一枚全新的匿名身份 —— 主人的记录不会因此少一条，只是换个视角。
+    acct.hidden = false;
+    acct.textContent = state.host ? "退出登录" : "登录后台";
+    acct.title = state.host ? "退出后这台浏览器就变成一个全新的访客，方便你看访客看到的样子"
+      : "主人从这里进后台（改设置、加角色、管表情包）";
+    acct.onclick = () => {
+      if (!state.host) { location.href = "/login"; return; }
+      api("/api/logout", { method: "POST" }).then(() => location.reload(),
+                                                  () => location.reload());
+    };
+  }
   const btn = qs("tabbar") && qs("tabbar").querySelector('[data-tab="me"]');
   if (btn) btn.hidden = state.host === false;
   if (state.host === false && currentTab() === "me") switchTab("chat");
