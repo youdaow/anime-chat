@@ -1226,7 +1226,7 @@ class Bridge:
                             # 报成「连不上」会把人引去查网络。这种是真的被门挡在外面。
                             out.error = ("animechat 把这个请求挡在认证外面了（"
                                         f"{r.status_code}）。本机 settings.json 里的 auth_bridge_token "
-                                        "要和网页服务那一份一致：两边都跑 `animechat invite --token` 对一下。")
+                                        "要和网页服务那一份一致：两边都跑 `animechat invite token` 对一下。")
                             return out
                         out.error = self._unreachable_note(
                             f"返回 {r.status_code}" + (f"：{body}" if body else "（无内容）"))

@@ -281,9 +281,11 @@ def cmd_export_card(args: argparse.Namespace) -> int:
 
 
 def cmd_invite(args) -> int:
-    """发 / 收 / 列访问口令。
+    """发 / 列 / 收访问口令。动词是子命令（`invite add 小明`、`invite list`、
+    `invite revoke <id>`、`invite token`）—— README 和帮助里都这么写，让人打完
+    报「不认得参数」是最难看的失败（第一版就是这样，命令上了服务器才发现）。
 
-    口令只在这一刻打印一次，库里存的是 salted scrypt 摘要 —— 所以忘了就重新发一个，
+    口令只在这一刻打印一次，库里存的是 salted scrypt 摘要 —— 忘了就重新发一个，
     去翻数据库也翻不出来。
 
     顺手把两个密钥补齐：auth_session_secret 空着的时候登录一定失败（auth.unsign 拒绝
@@ -293,22 +295,23 @@ def cmd_invite(args) -> int:
     from .config import load_settings, save_settings
     from .store import store
 
+    action = getattr(args, "inv_cmd", None) or "list"
     s = load_settings()
     db = store()
 
-    if args.token:
+    if action == "token":
         if not s.auth_bridge_token:
             save_settings({"auth_bridge_token": auth.new_secret()})
             s = load_settings()
         print("飞书桥令牌（存进 settings.json 的 auth_bridge_token，桥自己会带上）：")
         print("  " + s.auth_bridge_token)
         return 0
-    if args.revoke:
-        ok = db.revoke_visitor(args.revoke)
-        print(("已撤销 " + args.revoke + "（他手上的 cookie 当场失效）") if ok
-              else ("没有这个访客：" + args.revoke))
+    if action == "revoke":
+        ok = db.revoke_visitor(args.vid)
+        print(("已撤销 " + args.vid + "（他手上的 cookie 当场失效）") if ok
+              else ("没有这个访客：" + args.vid))
         return 0 if ok else 1
-    if args.list:
+    if action == "list":
         rows = db.list_visitors()
         if not rows:
             print("还没有访客。发一个：python -m animechat.cli invite add 名字")
@@ -320,9 +323,6 @@ def cmd_invite(args) -> int:
                   % (r["id"], r["name"] or "（没名字）", "主人" if r["admin"] else "访客", seen))
         return 0
 
-    if not args.name:
-        print("要个名字，方便以后认出该撤销谁：python -m animechat.cli invite add 小明")
-        return 2
     patch = {}
     if not s.auth_session_secret:
         patch["auth_session_secret"] = auth.new_secret()
@@ -388,13 +388,16 @@ def main(argv: list[str] | None = None) -> int:
                       help="清掉某个角色（或全部）的飞书绑定")
     p_fs.set_defaults(fn=cmd_feishu)
 
-    p_inv = sub.add_parser("invite", help="发 / 收访问口令（把这套界面交给别人用之前先跑它）")
-    p_inv.add_argument("name", nargs="?", default="", help="给谁用的，例如「小明」")
-    p_inv.add_argument("--admin", action="store_true",
-                       help="这个人也能改角色/表情/设置（默认只能聊天、只看自己的会话）")
-    p_inv.add_argument("--list", action="store_true", help="列出现有访客")
-    p_inv.add_argument("--revoke", default="", metavar="访客id", help="撤销一个访客，他的 cookie 当场失效")
-    p_inv.add_argument("--token", action="store_true", help="打印飞书桥用的 x-animechat-token")
+    p_inv = sub.add_parser("invite", help="发 / 列 / 收访问口令（把这套界面交给别人用之前先跑它）")
+    inv = p_inv.add_subparsers(dest="inv_cmd")
+    p_inv_add = inv.add_parser("add", help="发一个新口令（口令只显示这一次）")
+    p_inv_add.add_argument("name", help="给谁用的，例如「小明」")
+    p_inv_add.add_argument("--admin", action="store_true",
+                           help="这个人也是主人身份：能改角色/表情/设置，并看得见所有人的会话")
+    inv.add_parser("list", help="列出现有访客")
+    p_inv_rev = inv.add_parser("revoke", help="撤销一个访客，他的 cookie 当场失效")
+    p_inv_rev.add_argument("vid", metavar="访客id")
+    inv.add_parser("token", help="打印飞书桥用的 x-animechat-token")
     p_inv.set_defaults(fn=cmd_invite)
 
     argv = list(sys.argv[1:] if argv is None else argv)

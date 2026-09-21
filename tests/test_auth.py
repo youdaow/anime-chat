@@ -5,6 +5,7 @@
 import re
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from animechat import auth
@@ -214,8 +215,21 @@ def test_character_view_previews_are_scoped_to_the_visitor():
 
 
 # ------------------------------------------------------------------ CLI
-def test_cli_invite_issues_a_code_that_actually_logs_in(capsys):
-    assert cli_main(["invite", "小明"]) == 0
+def test_cli_invite_verbs_match_what_the_docs_say():
+    """第一版把 name 做成裸位置参数（`invite 小明`），而 README / 帮助里写的是
+    `invite add 小明` —— 命令上了服务器才炸。所以四种动词都要能解析，
+    少动词的写法必须明确报错，而不是悄悄建出一个叫 "add" 的访客。"""
+    for argv in (["invite", "list"], ["invite", "token"], ["invite", "revoke", "vdeadbeef"]):
+        try:
+            cli_main(argv)
+        except SystemExit as exc:
+            raise AssertionError("%s 不该解析失败：%s" % (" ".join(argv), exc))
+    with pytest.raises(SystemExit):
+        cli_main(["invite", "小明"])          # 少了 add 就别猜意图（它会去建一个叫小明的访客）
+
+
+def test_cli_invite_add_issues_a_code_that_actually_logs_in(capsys):
+    assert cli_main(["invite", "add", "小明"]) == 0
     out = capsys.readouterr().out
     m = re.search(r"访问口令[:：]\s*(\S+)", out)
     assert m, out
@@ -226,9 +240,14 @@ def test_cli_invite_issues_a_code_that_actually_logs_in(capsys):
     assert client.get("/api/bootstrap").status_code == 200
 
     capsys.readouterr()
-    assert cli_main(["invite", "--list"]) == 0
+    assert cli_main(["invite", "list"]) == 0
     listing = capsys.readouterr().out
     assert "小明" in listing and code not in listing, "列表里不该再出现口令"
+
+    vid = re.search(r"(v[0-9a-f]{8})", out).group(1)
+    capsys.readouterr()
+    assert cli_main(["invite", "revoke", vid]) == 0
+    assert client.get("/api/bootstrap").status_code == 401, "撤销要当场生效"
 
 
 def _secret_from_store() -> str:

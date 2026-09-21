@@ -309,9 +309,9 @@ anime-chat/
 
 ```bash
 python -m animechat.cli invite add 小明        # 打印一次性访问口令（16 位，库里只存 scrypt 摘要）
-python -m animechat.cli invite --list          # 看看都有谁、谁上次什么时候登录
-python -m animechat.cli invite --revoke v1a2b3c4d   # 撤销：他手上的 cookie 当场失效
-python -m animechat.cli invite --token         # 飞书桥要用的 x-animechat-token
+python -m animechat.cli invite list           # 看看都有谁、谁上次什么时候登录
+python -m animechat.cli invite revoke v1a2b3c4d   # 撤销：他手上的 cookie 当场失效
+python -m animechat.cli invite token          # 飞书桥要用的 x-animechat-token
 ```
 
 打开方式是给进程一个环境变量（不必改 settings.json，也不用碰界面）：
