@@ -90,11 +90,12 @@
       <div class="stream-status" id="live-status" hidden></div>
     </footer>
     <div class="picker" id="picker" hidden>
-      <div class="picker-head">
-        <!-- 搜索框里别写例句：那一长句把输入框撑满，图只剩一行。例句挪到悬停提示。 -->
-        <input id="picker-q" type="search" placeholder="搜表情"
-               title="按标签搜，例如：傲娇 / 加油 / 无语">
-        <button id="picker-close" class="close">×</button>
+      <!-- 搜索框只在「联网搜索」那一档出现：本地翻图靠上面那条筛选带，
+           而这面板以前整整三行都是控件，图只剩一行。× 浮在右上角，不占整行。 -->
+      <button id="picker-close" class="close" title="收起表情面板" aria-label="收起表情面板">×</button>
+      <div class="picker-head" id="picker-head" hidden>
+        <input id="picker-q" type="search" placeholder="搜图关键词（回车搜索）"
+               title="例如：傲娇 表情 / 柴田雪成 戳图">
       </div>
       <!-- 来源和情绪以前各占一行；合成一条横向滚的筛选带，中间一道分隔。
            「全部情绪」那颗删了 —— 再点一次当前情绪就是取消（本来就是这个行为）。 -->

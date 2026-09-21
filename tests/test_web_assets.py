@@ -86,10 +86,12 @@ def test_press_feedback_is_for_everyone_and_shares_one_motion_language():
 
 
 def test_the_sticker_panel_spends_its_height_on_stickers():
-    """这个面板以前被自己撑肥：搜索框里写例句、底下一行「共 N 张 · 最多 3 张」再加一颗
-    重复的「管理表情库」按钮（设置里本来就有），图格只剩一行。现在底栏平时是空的，
-    空了就整档不占高度；说明挪到悬停和空结果里，「清空」跟着已选的图走。"""
-    assert 'placeholder="搜表情"' in HTML and "搜表情（标签" not in HTML
+    """这个面板以前被自己撑肥：一行搜索框、一行「共 N 张 · 最多 3 张」再加一颗重复的
+    「管理表情库」（设置里本来就有），图格只剩一行。现在：搜索框只在联网那一档出现，
+    底栏平时整档不占高度，「清空」跟着已选的图走。"""
+    assert '<div class="picker-head" id="picker-head" hidden>' in HTML, "搜索框默认不该占一行"
+    assert ".picker-head[hidden] { display: none; }" in CSS, "display:flex 会盖掉 hidden，必须显式关掉"
+    assert "if (!web) p.q = \"\";" in JS, "看不见输入框时残留的关键词会悄悄把图筛没"
     picker_fn = JS[JS.index("function renderPicker("):JS.index("async function renderWebPicker")]
     # 只看代码行：注释里可以写历史（"以前这儿堆着管理按钮"），代码里不行
     body = "\n".join(l for l in picker_fn.splitlines() if not l.strip().startswith("//"))

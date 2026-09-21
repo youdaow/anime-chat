@@ -1417,7 +1417,9 @@ function togglePicker(force) {
       // 面板是 .main 的最后一个 flex 子节点（在输入框下方），不滚一下可能整块还在屏幕外
       if (picker.scrollIntoView) picker.scrollIntoView({ block: "end", behavior: "smooth" });
     } else {
-      qs("picker-q").focus({ preventScroll: true });
+      // 桌面以前一开面板就把光标丢进搜索框；本地那一档现在没有搜索框了，
+      // 只有「联网搜索」需要打字，才给它焦点。
+      if (state.picker.tab === "web") qs("picker-q").focus({ preventScroll: true });
     }
   }
 }
@@ -1429,18 +1431,18 @@ function filteredStickers() {
   else if (p.tab === "builtin") pool = pool.filter((s) => s.origin === "builtin");
   else if (p.tab === "user") pool = pool.filter((s) => s.origin !== "builtin");
   if (p.emotion) pool = pool.filter((s) => s.emotion === p.emotion);
-  const q = p.q.trim().toLowerCase();
-  if (q) {
-    pool = pool.filter((s) => {
-      const hay = [s.id, s.label, s.emotion, s.emotion_label].concat(s.tags || []).join(" ").toLowerCase();
-      return hay.indexOf(q) >= 0;
-    });
-  }
+  // 这里不再按关键词筛：面板上的搜索框只剩「联网搜索」用（p.q 在 renderPicker 里
+  // 离开那一档就被清空）。要按标签翻库，走「我 → 管理表情库」那格筛选。
   return pool;
 }
 
 function renderPicker() {
   const p = state.picker;
+  // 搜索框只在「联网搜索」那一档存在。看不见输入框时必须把关键词清掉 ——
+  // 否则残留的那句会悄悄把本地表情筛没，用户连"被谁筛的"都找不到。
+  const web = p.tab === "web";
+  if (!web) p.q = "";
+  qs("picker-head").hidden = !web;
   for (const btn of qs("picker-tabs").children) btn.classList.toggle("on", btn.dataset.tab === p.tab);
   const emoRow = clear(qs("picker-emotions"));
   // 没有「全部情绪」那颗：再点一次当前情绪就是取消，省一格也让这条带更短。

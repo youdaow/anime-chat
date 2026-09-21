@@ -523,7 +523,14 @@ button { cursor: pointer; border: 0; background: none; }
   animation: slide-up .2s ease both;
 }
 @keyframes slide-up { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
-.picker-head { display: flex; gap: 8px; align-items: center; }
+/* × 浮在面板右上角：它不配独占一行（那一行本来能给一排表情）。
+   右边留出 24px，控件带和输入框都不会滑到它底下。 */
+.picker .close {
+  position: absolute; top: 5px; right: 8px; z-index: 1;
+  font-size: 20px; line-height: 1; color: var(--text-faint); padding: 2px 6px; background: none;
+}
+.picker-head { display: flex; gap: 8px; align-items: center; padding-right: 24px; }
+.picker-head[hidden] { display: none; }
 .picker-head input {
   flex: 1; min-width: 0; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--panel);
@@ -531,7 +538,7 @@ button { cursor: pointer; border: 0; background: none; }
 .picker-head input:focus { outline: none; border-color: var(--accent); }
 /* 一条筛选带：来源 + 一道分隔 + 情绪。窄屏整条横滚，而不是各占一行把图挤下去。 */
 .picker-filters {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px; padding-right: 24px;
   overflow-x: auto; overscroll-behavior: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch;
 }
 .picker-filters::-webkit-scrollbar { display: none; }
