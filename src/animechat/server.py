@@ -466,7 +466,15 @@ def create_app(settings_override: Settings | None = None) -> Any:
 
     @app.get("/media/{rest:path}", include_in_schema=False)
     def media_route(rest: str) -> Response:
-        path = media.resolve("/media/" + rest)
+        url = "/media/" + rest
+        path = media.resolve(url)
+        pair = media.thumb_pair(url)
+        if pair is not None:
+            # 缩略图：缺着或比源文件旧就现做一张。做不出来（缺 Pillow / 源图坏了）就把
+            # 原图当缩略图发出去 —— 浏览器不在乎扩展名，格子里裂一张才是要命的。
+            out, src = pair
+            if path is None or media.needs_thumb(url):
+                path = out if media.make_thumb(src, out) else src
         if path is None:
             raise HTTPException(404, "素材不存在：" + rest.split("/")[-1])
         return FileResponse(str(path), headers={"Cache-Control": "public, max-age=3600"})
@@ -1338,9 +1346,12 @@ def create_app(settings_override: Settings | None = None) -> Any:
         if st is None:
             raise HTTPException(404, "表情不存在")
         builtin = st.origin == "builtin"
+        thumb = media.thumb_pair(media.thumb_url(st.url) or "")
         if not library().delete(sid):
             raise HTTPException(400, "这张删不掉")
         # 内置那张是"隐藏"（素材留在包里，可恢复），用户自己的图是真删文件
+        if thumb is not None and not builtin:
+            thumb[0].unlink(missing_ok=True)   # 缓存的缩略图跟着源图走，别留孤儿
         return {"ok": True, "hidden": builtin}
 
     # ----------------------------------------------------------- 设置
@@ -1470,6 +1481,8 @@ _STICKER_CLIENT_FIELDS = ("id", "label", "tags", "emotion", "url", "origin", "fa
 def _sticker_view(st, auto: bool = False) -> dict:
     data = {key: getattr(st, key) for key in _STICKER_CLIENT_FIELDS}
     data["emotion_label"] = emotion_label(st.emotion)
+    # 列表/面板/建议那一排都用它，点开大图仍用原 url。gif 和小图会原样返回。
+    data["thumb"] = media.thumb_url(st.url) or st.url
     if auto:
         data["auto"] = True
     return data

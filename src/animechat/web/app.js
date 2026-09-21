@@ -1456,7 +1456,7 @@ function renderSuggest() {
       title: st.label + (picked.has(st.id) ? "（已选，点一下取消）" : "（加入这条消息）"),
       "aria-label": "加入表情 " + st.label,
       onclick: () => toggleAttach(st),
-    }, [el("img", { src: st.url, alt: st.label, loading: "lazy" })]));
+    }, [el("img", { src: st.thumb || st.url, alt: st.label, loading: "lazy" })]));
   }
 }
 
@@ -1531,7 +1531,7 @@ function renderPicker() {
   for (const st of list.slice(0, shown)) {
     const picked = state.attach.some((s) => s.id === st.id);
     const cell = el("div", { class: "sticker-cell" + (picked ? " picked" : ""), title: (st.tags || []).join("、") }, [
-      el("img", { src: st.url, alt: st.label, loading: "lazy" }),
+      el("img", { src: st.thumb || st.url, alt: st.label, loading: "lazy" }),
       el("figcaption", { text: st.label || st.id }),
       // 点整格是"选中要发"，所以预览得给个单独按钮，不然没法在发之前看清这张是什么
       el("button", { class: "cell-btn zoom", title: "放大预览", text: "🔍",
@@ -1663,7 +1663,7 @@ function renderAttach() {
   row.hidden = !state.attach.length;
   for (const st of state.attach) {
     row.appendChild(el("div", { class: "attach-item" }, [
-      el("img", { src: st.url, alt: st.label }),
+      el("img", { src: st.thumb || st.url, alt: st.label }),
       el("button", { text: "×", title: "移除", onclick: () => toggleAttach(st) }),
     ]));
   }

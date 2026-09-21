@@ -1,6 +1,7 @@
 """端到端：Mock 模式下，界面要拿到的东西都得有。"""
 
 import io
+import os
 import json
 import re
 
@@ -269,6 +270,35 @@ def test_client_sticker_record_has_no_dead_weight(client):
             assert dead not in up, dead + " 前端没地方读"
     finally:
         client.delete("/api/stickers/" + up["id"])
+
+
+def test_sticker_thumbs_generate_on_demand(client):
+    """表情面板一次画 120 格，而库里最大的原图有 13MB —— 全按原图拉就是几十兆往手机上砸。
+    缩略图按需生成 + 落盘缓存；小图和 gif 直接用原图（压了不省，还会丢掉动画）。"""
+    big = io.BytesIO()
+    # 真随机像素：PNG 压不动它，才有"原图很大"的那个形状（规律渐变会被压成几 KB，测不到）
+    Image.frombytes("RGB", (420, 420), os.urandom(420 * 420 * 3)).save(big, format="PNG")
+    assert len(big.getvalue()) > media.THUMB_MIN_BYTES, "测试图得够大，不然走不到缩略那条路"
+    up = client.post("/api/stickers/upload",
+                     files={"file": ("缩略图测试+开心.png", big.getvalue(), "image/png")},
+                     data={"tags": "缩略图测试", "emotion": "happy"}).json()["sticker"]
+    small = io.BytesIO()
+    Image.new("RGBA", (20, 20)).save(small, format="PNG")
+    tiny = client.post("/api/stickers/upload",
+                       files={"file": ("缩略图太小+开心.png", small.getvalue(), "image/png")},
+                       data={"tags": "缩略图太小", "emotion": "happy"}).json()["sticker"]
+    try:
+        assert up["thumb"].startswith("/media/stickers/thumbs/") and up["thumb"].endswith(".w220.webp")
+        assert tiny["thumb"] == tiny["url"], "小图不该多一次生成"
+        got = client.get(up["thumb"])
+        assert got.status_code == 200 and len(got.content) * 3 < len(big.getvalue()), "缩略图没真变小"
+        assert media.thumb_pair(up["thumb"])[0].is_file(), "生成完要落盘，别每张都现压"
+        assert client.get(up["thumb"]).status_code == 200      # 第二次走缓存
+        assert media.thumb_pair("/media/stickers/thumbs/没有这张.w220.webp") is None
+        assert media.thumb_pair("/media/stickers/thumbs/../../animechat.db") is None
+    finally:
+        client.delete("/api/stickers/" + up["id"])
+        client.delete("/api/stickers/" + tiny["id"])
 
 
 def test_settings_roundtrip_masks_key(client):
