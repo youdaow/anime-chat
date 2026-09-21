@@ -33,6 +33,23 @@ def test_the_admin_door_is_one_button_not_a_signposted_gate():
     assert 'href="/login"' not in HTML, "主页面不许挂登录页链接，只留这一个按钮"
 
 
+def test_ops_hints_in_the_banner_are_for_the_host_only():
+    """黄条上讲的全是"怎么修这台机器"：哪个环境变量盖住了设置、去哪儿敲 build-assets、
+    去哪儿填 Key。访客没有设置面板，也不该被提示服务器目录长什么样 —— 一律按身份收口。"""
+    assert "const host = state.host !== false;" in JS
+    assert "if (host && s.env_overridden" in JS
+    assert "if (host && !state.stickers.length)" in JS
+    # 只报字段名等于说空话：auth_enabled 界面上根本没有格子，得报出真的变量名
+    assert '"ANIMECHAT_" + String(k).toUpperCase()' in JS
+
+
+def test_env_prefix_matches_what_the_banner_prints():
+    """前端是拿字段名拼出 `ANIMECHAT_XXX` 给人看的 —— 服务端哪天改了前缀，这里就该红。"""
+    from animechat.config import ENV_PREFIX
+
+    assert ENV_PREFIX == "ANIMECHAT_"
+
+
 def test_web_assets_are_revalidated():
     """前端没有版本号，必须每次回源校验，否则改了样式刷新还是旧的。"""
     from fastapi.testclient import TestClient

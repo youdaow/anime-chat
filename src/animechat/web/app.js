@@ -666,20 +666,27 @@ function renderBanner() {
   const banner = qs("banner");
   const s = state.settings;
   if (!s) { banner.hidden = true; return; }
+  // 黄条上这几条都是"怎么修这台服务器"，不是"你被服务了什么样的回复"。
+  // 访客既没有设置面板，也不该被告知去哪儿敲命令 —— 那些只给主人看。
+  const host = state.host !== false;
   const notes = [];
   if (s.mock_mode) {
     notes.push(el("span", {}, [
       el("b", { text: "当前是 Mock 模式：" }),
-      document.createTextNode("回复由本机假生成，只用来验证流程与表情逻辑。接真模型：在设置 → 模型 的「接入方式」里挑一家平台（DeepSeek / 通义千问 / 智谱 / Kimi / OpenAI，地址已预置，只填 Key），或选「自定义 / 中转站」自己填 Base URL。"),
+      document.createTextNode("回复由本机假生成，只用来验证流程与表情逻辑。"),
     ]));
-    if (state.host !== false) {
+    if (host) {
+      notes.push(el("span", { text: "接真模型：在设置 → 模型 的「接入方式」里挑一家平台（DeepSeek / 通义千问 / 智谱 / Kimi / OpenAI，地址已预置，只填 Key），或选「自定义 / 中转站」自己填 Base URL。" }));
       notes.push(el("button", { class: "plain", text: "去设置", onclick: () => switchTab("me") }));
     }
   }
-  if (s.env_overridden && s.env_overridden.length) {
-    notes.push(el("span", { text: "注意：" + s.env_overridden.join("、") + " 被环境变量覆盖，界面上的改动不会生效。" }));
+  if (host && s.env_overridden && s.env_overridden.length) {
+    // 别只报字段名 —— auth_enabled 这类界面上根本没有格子，说"界面上的改动不会生效"
+    // 是空话；要说清是哪一个环境变量、去哪儿改（服务器上就是 systemd 单元里那行 Environment=）。
+    const names = s.env_overridden.map((k) => "ANIMECHAT_" + String(k).toUpperCase());
+    notes.push(el("span", { text: "注意：" + names.join("、") + " 是由环境变量定的，界面里改了也不生效 —— 要改就改那个变量（服务器上一般在 systemd 单元里）。" }));
   }
-  if (!state.stickers.length) {
+  if (host && !state.stickers.length) {
     notes.push(el("span", {}, [
       document.createTextNode("表情库是空的（内置素材还没生成）。跑一次 "),
       el("code", { text: "animechat build-assets" }),
