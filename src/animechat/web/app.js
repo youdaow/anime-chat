@@ -32,7 +32,8 @@ const state = {
   // 群聊：本轮由谁开口（null = 让服务端按轮转决定）；autoing = 正在让 AI 自己聊
   speaker: null,
   autoing: false,
-  picker: { tab: "all", q: "", emotion: "", web: [], loading: false, provider: "", note: "" },
+  picker: { tab: "all", q: "", emotion: "", web: [], loading: false, provider: "", note: "",
+            shown: 0, filterKey: "" },
   // 当前会话成员的角色卡快照（含已隐藏的），由 openConversation 写入
   convCharsLocal: null,
 };
@@ -1413,6 +1414,8 @@ function handleEvent(raw, live, setStatus) {
 
 /* ---------------------------------------------------------------- 表情面板 */
 
+const PICKER_PAGE = 120;   // 面板一次画多少格；手机上再就多就明显掉帧
+
 /* 打字时按关键词挑几张相关的表情，浮在输入框上方。三档，从强到弱：
    3 整词出现在句子里（"好傲娇啊" → 傲娇）
    2 正在打的词是标签的一部分（"傲" 打全之前先给 傲娇）
@@ -1518,8 +1521,14 @@ function renderPicker() {
   const list = filteredStickers();
   if (!list.length) {
     grid.appendChild(el("div", { class: "picker-loading", text: "没有匹配的表情。换个标签，或去「联网搜索」。" }));
+    return;
   }
-  for (const st of list) {
+  // 一次只画一格屏的量：1690 个格子（每个还带 img + figcaption + 预览按钮）全塞进 DOM，
+  // 手机上光排版就要卡好几秒。换筛选条件时回到第一页，「再看 120 张」往下翻。
+  const key = p.tab + "|" + p.emotion;
+  if (p.filterKey !== key) { p.filterKey = key; p.shown = PICKER_PAGE; }
+  const shown = Math.min(p.shown || PICKER_PAGE, list.length);
+  for (const st of list.slice(0, shown)) {
     const picked = state.attach.some((s) => s.id === st.id);
     const cell = el("div", { class: "sticker-cell" + (picked ? " picked" : ""), title: (st.tags || []).join("、") }, [
       el("img", { src: st.url, alt: st.label, loading: "lazy" }),
@@ -1530,6 +1539,13 @@ function renderPicker() {
     ]);
     cell.addEventListener("click", () => toggleAttach(st));
     grid.appendChild(cell);
+  }
+  if (shown < list.length) {
+    grid.appendChild(el("button", {
+      class: "picker-more",
+      text: "再看 " + Math.min(PICKER_PAGE, list.length - shown) + " 张（共 " + list.length + "）",
+      onclick: () => { p.shown = shown + PICKER_PAGE; renderPicker(); },
+    }));
   }
   // 这一档不放东西：张数、"最多 3 张"、管理表情库原来都堆在这儿，把图挤成一行。
   // 张数在「我 → 表情包」那颗按钮的悬停里，超限会当场提示，管理入口也在那一页。

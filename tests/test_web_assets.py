@@ -96,7 +96,7 @@ def test_the_sticker_panel_spends_its_height_on_stickers():
     # 只看代码行：注释里可以写历史（"以前这儿堆着管理按钮"），代码里不行
     body = "\n".join(l for l in picker_fn.splitlines() if not l.strip().startswith("//"))
     assert "管理表情库" not in body and "openStickerLibrary" not in body
-    assert "共 \" + list.length" not in JS, "张数不该常驻在面板底下"
+    assert "共 \" + list.length + \" 张 · 点选加入" not in JS, "张数不该常驻在面板底下"
     assert ".picker-foot:empty { display: none; }" in CSS
     assert 'class: "attach-clear"' in JS and ".attach-clear {" in CSS
 
@@ -130,6 +130,17 @@ def test_typing_surfaces_matching_stickers_above_the_input():
     assert ".suggest-row[hidden] { display: none; }" in CSS, "display:flex 会盖掉 hidden"
     rm = CSS[CSS.index("@media (prefers-reduced-motion"):]
     assert ".suggest-row" in rm, "晕动偏好下建议条不该弹"
+
+
+def test_the_picker_paints_one_page_not_the_whole_library():
+    """1690 个格子（每格 img + figcaption + 预览按钮）一次塞进 DOM，手机上光是排版就卡住。
+    一次画 120 格，点「再看 120 张」往下翻；换筛选条件必须回到第一页 —— 不然翻到的
+    位置对不上新列表，看着像"图少了"。"""
+    assert "const PICKER_PAGE = 120;" in JS
+    assert "list.slice(0, shown)" in JS
+    assert 'class: "picker-more"' in JS
+    assert "p.filterKey !== key" in JS and "p.shown = shown + PICKER_PAGE" in JS
+    assert ".picker-more { grid-column: 1 / -1;" in CSS, "翻页按钮要横跨整行，别占一格"
 
 
 def test_web_assets_are_revalidated():

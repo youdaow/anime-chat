@@ -1461,8 +1461,14 @@ def _chunks(text: str, size: int) -> list[str]:
     return [text[i:i + size] for i in range(0, len(text), size)] or [""]
 
 
+# 前端读的表情字段就这些：整条 model_dump 里 width/height/bytes/created_at 一处都没人用
+# （created_at 前端只用在消息上），一条 369 字节 × 1690 张 = 600KB，手机端每次开页面都要
+# 先把这坨下完再 JSON.parse —— 那就是他说的"一开就卡"。note 留着：管理面板显示备注。
+_STICKER_CLIENT_FIELDS = ("id", "label", "tags", "emotion", "url", "origin", "favorite", "uses", "note")
+
+
 def _sticker_view(st, auto: bool = False) -> dict:
-    data = st.model_dump()
+    data = {key: getattr(st, key) for key in _STICKER_CLIENT_FIELDS}
     data["emotion_label"] = emotion_label(st.emotion)
     if auto:
         data["auto"] = True

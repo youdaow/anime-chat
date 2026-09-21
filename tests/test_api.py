@@ -253,6 +253,24 @@ def test_sticker_endpoints(client):
     assert client.delete("/api/stickers/" + made["id"]).status_code == 200
 
 
+def test_client_sticker_record_has_no_dead_weight(client):
+    """手机端一开页面就要下整份表情索引：一条里前端不读的字段 × 1690 张，就是白烧的
+    下载和 JSON.parse（实测瘦身前 572KB）。note 必须留着 —— 管理面板要显示备注；
+    删字段那一步曾经把它一起裁掉，被 test_scenario_note_reaches_the_client 拦住了。"""
+    buf = io.BytesIO()
+    Image.new("RGBA", (20, 20)).save(buf, format="PNG")
+    up = client.post("/api/stickers/upload",
+                     files={"file": ("字段形状+开心.png", buf.getvalue(), "image/png")},
+                     data={"tags": "字段形状", "emotion": "happy"}).json()["sticker"]
+    try:
+        assert "note" in up, "note 不能从前端契约里掉出去（管理面板读它显示备注）"
+        assert {"id", "label", "url", "tags", "emotion", "emotion_label", "origin", "favorite"} <= set(up)
+        for dead in ("width", "height", "bytes", "created_at"):
+            assert dead not in up, dead + " 前端没地方读"
+    finally:
+        client.delete("/api/stickers/" + up["id"])
+
+
 def test_settings_roundtrip_masks_key(client):
     out = client.patch("/api/settings", json={"llm_temperature": 0.35, "sticker_mode": "off"}).json()["settings"]
     assert out["llm_temperature"] == 0.35

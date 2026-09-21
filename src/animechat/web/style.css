@@ -602,6 +602,10 @@ button { cursor: pointer; border: 0; background: none; }
 /* 平时这一档是空的（本地表情列表不再往这儿放话），空了就别占高度 */
 .picker-foot:empty { display: none; }
 .picker-loading { grid-column: 1/-1; text-align: center; color: var(--text-faint); padding: 30px 0; }
+/* 分页按钮：一次只画 120 格，剩下的点一下再画（手机上全画会卡） */
+.picker-more { grid-column: 1 / -1; padding: 9px; border-radius: 10px;
+  border: 1px dashed var(--line-strong); background: none; color: var(--text-soft); font-size: 12.5px; }
+.picker-more:hover { color: var(--accent); border-color: var(--accent); }
 
 /* ------------------------------------------------------------------ 弹窗 */
 .modal-root { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; }
