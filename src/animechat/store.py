@@ -267,6 +267,15 @@ class Store:
             conn.execute("UPDATE conversations SET owner='' WHERE owner=?", (vid,))
             return cur.rowcount > 0
 
+    def set_visitor_code(self, vid: str, code_hash: str, bucket: str) -> bool:
+        """换口令，不动别的：访客 id 不变，所以**已经登录的设备不会被踢下线**
+        （cookie 认的是签名里的 id，跟口令无关）。bucket 也要一起换，
+        否则新口令查不到候选行，登录会一直报「口令不对」。"""
+        with self._raw() as conn:
+            cur = conn.execute("UPDATE visitors SET code_hash=?, bucket=? WHERE id=?",
+                               (code_hash, bucket, vid))
+            return cur.rowcount > 0
+
     # ------------------------------------------------------------ 消息
     def add_message(self, cid: int, role: str, content: str, stickers: list[str] | None = None,
                     emotion: str | None = None, meta: dict | None = None,

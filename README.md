@@ -313,11 +313,20 @@ anime-chat/
   只有库里的访客行能带 `admin`，匿名设备签名再对也拿不到。所以别把它写在任何公开的地方。
 
 ```bash
-python -m animechat.cli invite add --admin 主人    # 给你自己发一个口令（16 位，只存 scrypt 摘要）
+python -m animechat.cli invite add --admin 主人    # 给你自己发一个口令（默认随机 16 位，只存 scrypt 摘要）
+python -m animechat.cli invite add 小明 --code -  # 自己定一个口令：`-` 会问你输入，不进 shell 历史
+python -m animechat.cli invite set v1a2b3c4d 新口令  # 换口令；已登录的设备不会被踢下线
 python -m animechat.cli invite list               # 登记过的身份；匿名设备不在这里，它们不落库
 python -m animechat.cli invite revoke v1a2b3c4d   # 撤销：那个身份手上的 cookie 当场失效
 python -m animechat.cli invite token              # 飞书桥要用的 x-animechat-token
 ```
+
+自定义口令有一道最低门槛：**至少 10 个字符、至少 4 种不同字符**。不是洁癖 —— 随机口令是
+79 bit，而人自己编的往往是 6 位生日；限速只有「10 分钟 8 次」，几个 IP 轮一圈就把这种口令
+试出来了，而它背后是所有人的聊天记录。口令不区分大小写、空格会被吃掉（手机上输入的常态）。
+
+`set` 换的是**口令**，不是身份：cookie 里签的是访客 id，所以你自己其它设备不会因此掉线。
+要把某个人立刻请出去用 `revoke`（他的会话会归回主人，记录不会被删）。
 
 `--admin` 不是"权限大一点的访客"，那是主人本人的另一个登录（看得见所有人的会话），别随手给。
 
@@ -388,7 +397,7 @@ cookie 的 `Secure` 跟着传输走，判据在 `server.request_is_https()`：�
 ## 开发
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q          # 442 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
+.venv\Scripts\python.exe -m pytest -q          # 447 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
 .venv\Scripts\python.exe -m animechat.cli doctor
 $env:ANIMECHAT_DEBUG=1; .venv\Scripts\python.exe -m animechat.cli run --reload
 ```

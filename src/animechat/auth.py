@@ -39,6 +39,27 @@ def new_code() -> str:
     return "".join(secrets.choice(ALPHABET) for _ in range(CODE_LEN))
 
 
+MIN_LEN = 10          # 31 进制下 ≈50 bit：够把人挡在"猜"之外
+MIN_KINDS = 4         # 1111111111 有 10 位，但只有 1 种字符，等于没设
+
+
+def weak_reason(code: str) -> str:
+    """自己定的口令要过的一道最低检查。返回空串 = 可以用。
+
+    为什么要有这道闸：随机口令是 16 位 79 bit，自定义的通常是 4 位生日。开着认证、
+    限速只有「10 分钟内 8 次」，一个 6 位数字口令在几个 IP 轮一圈就出来了 —— 而这套
+    界面后面是所有人的聊天记录。所以短到这个程度的直接不让设。
+    """
+    c = normalize_code(code)
+    if not c:
+        return "口令不能是空的"
+    if len(c) < MIN_LEN:
+        return "自定义口令至少 %d 个字符（现在是 %d 个）：%s" % (MIN_LEN, len(c), "例如「xiaoyu-de-feiwu-2026」")
+    if len(set(c)) < MIN_KINDS:
+        return "口令里至少要有 %d 种不同的字符，光靠重复一个字符不算长度" % MIN_KINDS
+    return ""
+
+
 def new_secret() -> str:
     return secrets.token_urlsafe(32)
 

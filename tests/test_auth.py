@@ -397,12 +397,62 @@ def test_store_stats_can_be_scoped_to_one_owner():
     assert "db" not in mine and "db" in db.stats()
 
 
+# ------------------------------------------------------------------ 自定义口令
+def test_weak_reason_gates_the_codes_people_actually_pick():
+    assert auth.weak_reason("123456") != ""
+    assert auth.weak_reason("aaaaaaaaaa") != "", "够长但只有一种字符，等于没设"
+    assert auth.weak_reason("  ") != ""
+    assert auth.weak_reason(auth.new_code()) == "", "随机那套永远合格"
+    assert auth.weak_reason("xiaoyu-de-feiwu-2026") == ""
+    assert auth.weak_reason("  XiaoYu-De-FeiWu-2026  ") == "", "按 normalize 之后才判（大小写/空格会被吃掉）"
+
+
+def test_cli_invite_add_with_a_custom_code_logs_in(capsys):
+    code = "congming-de-xiaoyu"
+    assert cli_main(["invite", "add", "自定义", "--code", code]) == 0
+    out = capsys.readouterr().out
+    assert re.search(r"(v[0-9a-f]{8})", out), out
+    client = TestClient(create_app(settings_override=Settings(
+        auth_enabled=True, auth_session_secret=_secret_from_store(), auth_bridge_token=BRIDGE)))
+    assert login(client, code.upper() + " ").status_code == 200, "自定义口令享受同一套宽松输入"
+
+
+def test_cli_invite_rejects_a_weak_code_without_creating_a_row(capsys):
+    before = {r["id"] for r in store().list_visitors()}
+    assert cli_main(["invite", "add", "马虎", "--code", "123456"]) == 2
+    capsys.readouterr()
+    assert {r["id"] for r in store().list_visitors()} == before, "口令不合格就不该留下半条访客"
+
+
+def test_setting_a_new_code_keeps_signed_in_devices_and_moves_the_bucket(capsys):
+    """两个坑：① 换口令不该把已登录的设备踢下线（cookie 签的是访客 id）；
+    ② bucket 必须跟着换 —— 漏了它，新口令查不到候选行，登录会一直报「口令不对」，
+    而这种事只有刚换过口令的人会撞上。"""
+    vid, old = make_visitor("换口令的")
+    c = on()
+    assert login(c, old).status_code == 200
+    new = "yi-geng-huan-de-xin-kou-ling"
+    capsys.readouterr()
+    assert cli_main(["invite", "set", vid, new]) == 0
+    capsys.readouterr()
+    assert c.get("/api/bootstrap").status_code == 200, "换口令不是撤销，别把人踢下线"
+    assert login(on(), old).status_code == 401, "旧口令要当场失效"
+    assert login(on(), new).status_code == 200, "新口令得查得到 —— bucket 跟着换了没"
+
+
+def test_setting_a_code_for_an_unknown_visitor_fails_loudly(capsys):
+    assert cli_main(["invite", "set", "vnotexist", "yi-duan-bi-jiao-chang-de-ling"]) == 1
+    assert "没有这个访客" in capsys.readouterr().out
+
+
 # ------------------------------------------------------------------ CLI
 def test_cli_invite_verbs_match_what_the_docs_say():
     """第一版把 name 做成裸位置参数（`invite 小明`），而 README / 帮助里写的是
     `invite add 小明` —— 命令上了服务器才炸。所以四种动词都要能解析，
     少动词的写法必须明确报错，而不是悄悄建出一个叫 "add" 的访客。"""
-    for argv in (["invite", "list"], ["invite", "token"], ["invite", "revoke", "vdeadbeef"]):
+    for argv in (["invite", "list"], ["invite", "token"], ["invite", "revoke", "vdeadbeef"],
+                 ["invite", "set", "vdeadbeef", "zixin-kou-ling-a"],
+                 ["invite", "set", "vdeadbeef"]):
         try:
             cli_main(argv)
         except SystemExit as exc:

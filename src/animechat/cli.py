@@ -280,10 +280,25 @@ def cmd_export_card(args: argparse.Namespace) -> int:
     return 0
 
 
+def _invite_code(value: str | None) -> str:
+    """取口令：没给就随机发一个；给 "-" 就从键盘读（不回显）。
+
+    为什么要留 stdin 这条路：他换口令的理由正是"旧口令出现在别的地方了"，而命令行参数
+    会留在 shell 历史里 —— 同一个毛病换个地方犯。写 `-` 就绕开这一层。
+    """
+    from . import auth
+    if value is None:
+        return auth.new_code()
+    if value == "-":
+        import getpass
+        return getpass.getpass("口令（输入时不回显）：")
+    return value
+
+
 def cmd_invite(args) -> int:
-    """发 / 列 / 收访问口令。动词是子命令（`invite add 小明`、`invite list`、
-    `invite revoke <id>`、`invite token`）—— README 和帮助里都这么写，让人打完
-    报「不认得参数」是最难看的失败（第一版就是这样，命令上了服务器才发现）。
+    """发 / 列 / 改 / 收访问口令。动词是子命令（`invite add 小明`、`invite list`、
+    `invite set <id> 新口令`、`invite revoke <id>`、`invite token`）—— README 和帮助里都
+    这么写，让人打完报「不认得参数」是最难看的失败（第一版就是这样，命令上了服务器才发现）。
 
     口令只在这一刻打印一次，库里存的是 salted scrypt 摘要 —— 忘了就重新发一个，
     去翻数据库也翻不出来。
@@ -311,6 +326,19 @@ def cmd_invite(args) -> int:
         print(("已撤销 " + args.vid + "（他手上的 cookie 当场失效）") if ok
               else ("没有这个访客：" + args.vid))
         return 0 if ok else 1
+    if action == "set":
+        code = _invite_code(args.code)
+        bad = auth.weak_reason(code)
+        if bad:
+            print("这个口令不能用：" + bad)
+            return 2
+        if not db.set_visitor_code(args.vid, auth.hash_code(code), auth.bucket_of(code)):
+            print("没有这个访客：" + args.vid + "（先看一眼 invite list）")
+            return 1
+        print("已换好口令（只显示这一次）: " + code)
+        print("注意：换口令**不会**把已经登录的设备踢下线 —— cookie 认的是访客 id。")
+        print("      要让某人立刻失去权限：invite revoke " + args.vid)
+        return 0
     if action == "list":
         rows = db.list_visitors()
         if not rows:
@@ -331,7 +359,11 @@ def cmd_invite(args) -> int:
     if patch:
         save_settings(patch)
 
-    code = auth.new_code()
+    code = _invite_code(getattr(args, "code", None))
+    bad = auth.weak_reason(code)
+    if bad:
+        print("这个口令不能用：" + bad)
+        return 2
     vid = db.add_visitor(args.name, auth.hash_code(code), auth.bucket_of(code), admin=args.admin)
     print("访客 id : " + vid)
     print("访问口令: " + code + "   （只显示这一次，忘了就重发一个）")
@@ -394,7 +426,13 @@ def main(argv: list[str] | None = None) -> int:
     p_inv_add.add_argument("name", help="给谁用的，例如「小明」")
     p_inv_add.add_argument("--admin", action="store_true",
                            help="这个人也是主人身份：能改角色/表情/设置，并看得见所有人的会话")
+    p_inv_add.add_argument("--code", default=None, metavar="自定义口令",
+                           help="自己定口令（默认随机发一个）。不想留在 shell 历史里就写 --code - ，会问你输入")
     inv.add_parser("list", help="列出现有访客")
+    p_inv_set = inv.add_parser("set", help="换掉某个身份的口令；已登录的设备不会被踢下线")
+    p_inv_set.add_argument("vid", metavar="访客id")
+    p_inv_set.add_argument("code", nargs="?", default=None, metavar="自定义口令",
+                           help="新口令。留空 = 随机发一个；写 - = 输入时不回显")
     p_inv_rev = inv.add_parser("revoke", help="撤销一个访客，他的 cookie 当场失效")
     p_inv_rev.add_argument("vid", metavar="访客id")
     inv.add_parser("token", help="打印飞书桥用的 x-animechat-token")
