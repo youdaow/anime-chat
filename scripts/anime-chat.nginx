@@ -1,6 +1,7 @@
 # 线上 /etc/nginx/sites-available/anime-chat 的副本（2026-09-21 与服务器一致）。
 # 这份是**手工维护**的：服务器上是直接改的，改完记得同步回来，否则下次照这份铺上去
 # 会把 /me/ 静态站和 443 一起抹掉。证书在 /etc/nginx/ssl/anime-chat.{crt,key}，自签、397 天。
+# 443 挂着但 80 不强制跳转：自签证书在 Android Chrome 上过不去，日常仍走 http://<IP>/。
 
 server {
     listen 80 default_server;
@@ -14,10 +15,11 @@ server {
 
     client_max_body_size 20m;
 
-    # 明文一律 308 上 HTTPS（自签证书首次要手动信任一次）
-    if ($scheme = http) {
-        return 308 https://$host$request_uri;
-    }
+    # 暂不强制跳 https：自签证书在 Android Chrome 上根本过不去，手机上等于打不开。
+    # 换成正式证书（要一个能解析到这台机器的域名）那天，把下面三行取消注释即可。
+    # if ($scheme = http) {
+    #     return 308 https://$host$request_uri;
+    # }
 
     # ---- 个人网站（纯静态）：/me/ → /var/www/me/ ----
     location = /me {

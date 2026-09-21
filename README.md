@@ -327,9 +327,10 @@ Environment=ANIMECHAT_AUTH_ENABLED=1
 （他看得见全部会话），别随手给。飞书桥带 `x-animechat-token` 过门 —— **不能靠"来自
 127.0.0.1 免检"**，走 nginx 反代以后所有外网请求在应用眼里都是 127.0.0.1，那条规则等于门没关。
 
-一条要说清的残余风险：口令和 cookie 在 **HTTP 明文**上跑时，同一路径上的人能嗅到它们
-（拿到就是一个能读你聊天记录的活动 cookie）。没有域名也能堵上：签一张自签证书开 443，
-再把 80 整站重定向过去。
+口令和 cookie 在 **HTTP 明文**上跑时，同一路径上的人能嗅到它们（拿到就是一个能读你聊天记录的
+活动 cookie）。**要彻底解决只有一条路：一个能解析到这台机器的域名 + Let's Encrypt 签正式证书。**
+
+自签证书是条半路，说清它能做什么、不能做什么。签一张不难：
 
 ```bash
 openssl req -x509 -nodes -newkey rsa:2048 -days 397 \
@@ -337,24 +338,25 @@ openssl req -x509 -nodes -newkey rsa:2048 -days 397 \
   -subj "/CN=<服务器IP>" -addext "subjectAltName=IP:<服务器IP>"
 ```
 
-这个天数和这个字段都不能凭手感写：397 天是因为超过约 400 天的证书 iOS/Safari 直接拒绝握手
-（到期就重跑这条命令）；`subjectAltName` 是必须项，现代浏览器根本不看 CN，缺 SAN 就是
-`ERR_CERT_COMMON_NAME_INVALID`。nginx 在同一个 server 块里补三处 —— `listen 443 ssl default_server;`
-加两行证书路径、`if ($scheme = http) { return 308 https://$host$request_uri; }`、以及
-`proxy_set_header X-Forwarded-Proto $scheme;`。**最后那行是 cookie 带不带 `Secure` 的唯一依据**，
-漏了它 TLS 白上。
+这个天数和这个字段都不能凭手感写：397 天是因为超过约 400 天的证书 iOS/Safari 直接拒绝握手；
+`subjectAltName` 是必须项，现代浏览器根本不看 CN，缺 SAN 就是 `ERR_CERT_COMMON_NAME_INVALID`。
+nginx 侧在同一个 server 块里补 `listen 443 ssl default_server;` 加两行证书路径，以及
+`proxy_set_header X-Forwarded-Proto $scheme;` —— **最后这行是 cookie 带不带 `Secure` 的唯一依据**。
 
-还有一件和证书无关但更要命的：应用要退回只听 `127.0.0.1`。`0.0.0.0:8899` 挂着的时候，绕过
-nginx 直连这个端口就不经过任何认证，别人的会话、设置里的密钥全是敞开的。systemd drop-in 里
-用两行 `ExecStart=`（第一行清空、第二行重设）把 `--host` 换掉。
+但它防得住的只有被动嗅探，代价是每台设备第一次都要手动信任，而**Android 的 Chrome 压根不给
+"继续访问"这个按钮** —— 手机打不开，桌面端也得挨个装证书。所以线上的状态是：443 挂着（想用的
+人可以用），**80 不强制跳转，日常访问走 `http://<IP>/`**。那句 `if ($scheme = http) { return 308 … }`
+留在配置里注释着，换成正式证书那天打开就是一行。
 
-代价写在明面上：**每台设备第一次都要手动点「继续访问」**（自签证书没有可信链），Android 上的
-Chrome 连这个按钮都不给。它防得住被动嗅探，防不住主动中间人 —— 想彻底解决，要么搞个能解析到
-这台机器的域名签 Let's Encrypt，要么就这样用。
+cookie 的 `Secure` 跟着传输走，判据在 `server.request_is_https()`：要么应用自己就是 https，
+要么 `X-Forwarded-Proto: https` 且**连接来自本机**（同机 nginx 反代）—— 外网伪造这个头不算；
+而 http 下不加 Secure（加了浏览器不肯存 cookie，等于谁也登录不了，本机调试也照常能登）。
 
-上了 TLS 之后 cookie 的 `Secure` 是自动加的，判据在 `server.request_is_https()`：要么应用自己
-就是 https，要么 `X-Forwarded-Proto: https` 且**连接来自本机**（同机 nginx 反代）—— 外网伪造这个
-头不算，而 http 下不加 Secure（加了浏览器不肯存 cookie，等于谁也登录不了，本机调试也照常能登）。
+另一件事：应用退回只听 `127.0.0.1`，只留 nginx 一个入口。这**不是**因为直连 8899 能绕过认证 ——
+认证在应用中间件里，直连照样要口令；是因为没必要在 nginx 之外再开一个没有上传大小限制、
+没有访问日志、天天被扫描器撞的入口。systemd drop-in 里两行 `ExecStart=`（第一行清空、第二行重设）
+把 `--host` 换掉就行。
+
 口令本身仍是 16 位随机串、猜不出来，也**别让它等于你任何已有密码**。cookie 活 30 天，
 手机不用天天敲；随时 `invite revoke` 撤销。
 
