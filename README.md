@@ -400,7 +400,7 @@ cookie 的 `Secure` 跟着传输走，判据在 `server.request_is_https()`：�
 ## 开发
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q          # 454 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
+.venv\Scripts\python.exe -m pytest -q          # 455 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
 .venv\Scripts\python.exe -m animechat.cli doctor
 $env:ANIMECHAT_DEBUG=1; .venv\Scripts\python.exe -m animechat.cli run --reload
 ```

@@ -492,6 +492,24 @@ def test_last_character_is_per_visitor_and_the_host_owns_the_plain_key():
     assert a.get("/api/bootstrap").json()["prefs"]["last_character"] == ca, "主人建会话不该改写访客的记忆"
 
 
+def test_a_revoked_visitor_is_not_trapped_on_the_login_page():
+    """撤销之后他那枚坏 cookie 还在，于是每次进首页都被 303 回登录页 —— 登录页上那个
+    「回去聊天」就成了出不去的圈。进登录页时把坏 cookie 清掉，下次他就是台干净的新设备。"""
+    vid, code = make_visitor("被撤的")
+    c = on()
+    assert login(c, code).status_code == 200
+    assert c.get("/api/bootstrap").json()["visitor"]["admin"] is False
+    assert store().revoke_visitor(vid) is True
+
+    r = c.get("/", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/login"
+    assert "max-age=0" in r.headers.get("set-cookie", "").lower(), "要把那枚验不过的 cookie 一起清掉"
+
+    c.cookies.clear()                      # 模拟浏览器听从了这条 Set-Cookie
+    assert c.get("/", follow_redirects=False).status_code == 200, "下一次该是干净的新设备，不是又被弹走"
+    assert c.get("/api/conversations").json()["conversations"] == []
+
+
 # ------------------------------------------------------------------ CLI
 def test_cli_invite_verbs_match_what_the_docs_say():
     """第一版把 name 做成裸位置参数（`invite 小明`），而 README / 帮助里写的是

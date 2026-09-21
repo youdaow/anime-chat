@@ -392,7 +392,12 @@ def create_app(settings_override: Settings | None = None) -> Any:
         if v is None:
             if path.startswith("/api/") or path.startswith("/media/"):
                 return done(JSONResponse(status_code=401, content={"detail": "登录状态已失效，重新输一次口令"}))
-            return done(RedirectResponse(url="/login", status_code=303))
+            # 顺手把那枚验不过的 cookie 清掉：不然这个人点「回去聊天」又会被 303 回登录页，
+            # 出不去。能走到这儿的是口令制访客（匿名 cookie 过期算新设备，走上面重发），
+            # 而他的会话在 revoke 时就归回主人了 —— 清 cookie 不会弄丢属于他的东西。
+            resp = RedirectResponse(url="/login", status_code=303)
+            resp.delete_cookie(auth.COOKIE_NAME, path="/")
+            return resp
         request.state.visitor = v
         if not v["admin"]:
             m = PATH_CONV_ID.match(path)
