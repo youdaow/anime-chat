@@ -10,6 +10,7 @@ import { playSend, playReceive, prime as primeSfx, isOn as sfxOn, setOn as sfxSe
 const state = {
   page: "chat",       // 当前页面：chat / contacts / me 三个栏根页 + thread / card 两个推入页
   boot: null,
+  host: true,        // bootstrap 回来才知道；false = 这是台匿名设备，主人专属的入口一律不画
   characters: [],
   stickers: [],
   emotions: [],
@@ -155,6 +156,15 @@ function initTabs() {
   }
 }
 
+/* 不是主人就没有「我」这一栏。那页整页都是只有主人能写的东西（模型 Key、角色库、
+   表情包管理），访客点每一项都是 403 —— 入口宁删勿藏，也别留一个只会报错的面板。
+   服务端本来就会挡（VISITOR_WRITE 白名单），这里只是不把门把手递过去。 */
+function applyHostOnly() {
+  const btn = qs("tabbar") && qs("tabbar").querySelector('[data-tab="me"]');
+  if (btn) btn.hidden = state.host === false;
+  if (state.host === false && currentTab() === "me") switchTab("chat");
+}
+
 /* 「我」页 = 我自己的人设 + 全部设置，内嵌在 #settings-host 里。
    每次切到这一页重画一次：别的标签页刚改过的值、或保存后回回来的掩码 Key，
    都不该留在旧格子里（以前是弹窗，每次打开本来就会重画，行为保持一致）。 */
@@ -248,11 +258,13 @@ async function boot() {
 async function loadBootstrap() {
   const data = await api("/api/bootstrap");
   state.boot = data;
+  state.host = !data.visitor || data.visitor.admin !== false;   // 老服务不回 visitor 时按主人处理
   state.characters = data.characters || [];
   state.stickers = data.stickers || [];
   state.emotions = data.emotions || [];
   state.settings = data.settings;
   state.conversations = data.conversations || [];
+  applyHostOnly();
   renderBanner();
   renderChatList();
   // 汇总红点也要在这里刷一次：initTabs() 跑的时候还没有任何会话数据，
@@ -646,7 +658,9 @@ function renderBanner() {
       el("b", { text: "当前是 Mock 模式：" }),
       document.createTextNode("回复由本机假生成，只用来验证流程与表情逻辑。接真模型：在设置 → 模型 的「接入方式」里挑一家平台（DeepSeek / 通义千问 / 智谱 / Kimi / OpenAI，地址已预置，只填 Key），或选「自定义 / 中转站」自己填 Base URL。"),
     ]));
-    notes.push(el("button", { class: "plain", text: "去设置", onclick: () => switchTab("me") }));
+    if (state.host !== false) {
+      notes.push(el("button", { class: "plain", text: "去设置", onclick: () => switchTab("me") }));
+    }
   }
   if (s.env_overridden && s.env_overridden.length) {
     notes.push(el("span", { text: "注意：" + s.env_overridden.join("、") + " 被环境变量覆盖，界面上的改动不会生效。" }));
@@ -750,7 +764,9 @@ function messageNode(msg) {
   if (!me && msg.meta && msg.meta.stopped) meta.appendChild(el("span", { class: "chip", text: "已中断" }));
   if (errText) {
     meta.appendChild(el("button", { text: "重试", onclick: () => send({ regenerate: true }) }));
-    meta.appendChild(el("button", { text: "打开设置", onclick: () => switchTab("me") }));
+    if (state.host !== false) {
+      meta.appendChild(el("button", { text: "打开设置", onclick: () => switchTab("me") }));
+    }
   }
   meta.appendChild(el("button", { text: "复制", onclick: () => {
     navigator.clipboard.writeText(text).then(() => toast("已复制"), () => toast("浏览器不让复制", "err"));
@@ -1220,7 +1236,9 @@ function createLiveBubble() {
       if (hint) bubble.appendChild(el("span", { class: "hint", text: hint }));
       clear(meta);
       meta.appendChild(el("button", { text: "重试", onclick: () => send({ regenerate: true }) }));
-      meta.appendChild(el("button", { text: "打开设置", onclick: () => switchTab("me") }));
+      if (state.host !== false) {
+        meta.appendChild(el("button", { text: "打开设置", onclick: () => switchTab("me") }));
+      }
     },
   };
   return live;

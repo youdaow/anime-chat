@@ -304,15 +304,22 @@ anime-chat/
 
 ## 交给别人用（认证）
 
-默认**不开**：本机自己用不该被登录页挡一道。要给朋友访问就先把它打开 —— 这套界面上
-没有任何账号体系，开着就等于谁都能读你的聊天记录、删你的会话、改设置里的密钥。
+默认**不开**：本机自己用不该被登录页挡一道。打开以后是这么运转的：
+
+- 朋友拿到链接点开，看到的就是**一台新设备的空页面** —— 只有他自己的会话，看不见你的记录，
+  也看不见别的访客。角色库和表情包是共享的（能读能聊）。不用提前给谁发任何东西。
+- 「我」那一整页（模型 Key、角色库、表情管理）对访客根本不画出来，服务端也一律 403。
+- **主人 = 你自己**，靠 `/login` 输一次口令认出来。口令在这套里只剩这一个用途：认出你本人 ——
+  只有库里的访客行能带 `admin`，匿名设备签名再对也拿不到。所以别把它写在任何公开的地方。
 
 ```bash
-python -m animechat.cli invite add 小明        # 打印一次性访问口令（16 位，库里只存 scrypt 摘要）
-python -m animechat.cli invite list           # 看看都有谁、谁上次什么时候登录
-python -m animechat.cli invite revoke v1a2b3c4d   # 撤销：他手上的 cookie 当场失效
-python -m animechat.cli invite token          # 飞书桥要用的 x-animechat-token
+python -m animechat.cli invite add --admin 主人    # 给你自己发一个口令（16 位，只存 scrypt 摘要）
+python -m animechat.cli invite list               # 登记过的身份；匿名设备不在这里，它们不落库
+python -m animechat.cli invite revoke v1a2b3c4d   # 撤销：那个身份手上的 cookie 当场失效
+python -m animechat.cli invite token              # 飞书桥要用的 x-animechat-token
 ```
+
+`--admin` 不是"权限大一点的访客"，那是主人本人的另一个登录（看得见所有人的会话），别随手给。
 
 打开方式是给进程一个环境变量（不必改 settings.json，也不用碰界面）：
 
@@ -322,10 +329,11 @@ python -m animechat.cli invite token          # 飞书桥要用的 x-animechat-t
 Environment=ANIMECHAT_AUTH_ENABLED=1
 ```
 
-开着以后的规矩：**每个人只看得到自己的会话**，角色库和表情库共享（能读能聊），但加角色、
-改表情、改设置只有主人能做。`--admin` 不是"权限大一点的访客"，那是主人本人的另一个登录
-（他看得见全部会话），别随手给。飞书桥带 `x-animechat-token` 过门 —— **不能靠"来自
-127.0.0.1 免检"**，走 nginx 反代以后所有外网请求在应用眼里都是 127.0.0.1，那条规则等于门没关。
+代价写在明面上：**任何拿到链接的人都能进来花你那把共用的 LLM Key**，没有注册审核也没有配额。
+而且匿名设备不落库，**没法单独撤销某一个人** —— 真要收口只剩两条路：改 `auth_session_secret`
+（所有人的 cookie 一起作废，包括你自己的），或者退回"一人一行 + 口令"（`invite add` 之后把口令
+发给指定的人，别人进不来）。飞书桥带 `x-animechat-token` 过门 —— **不能靠"来自 127.0.0.1 免检"**，
+走 nginx 反代以后所有外网请求在应用眼里都是 127.0.0.1，那条规则等于门没关。
 
 口令和 cookie 在 **HTTP 明文**上跑时，同一路径上的人能嗅到它们（拿到就是一个能读你聊天记录的
 活动 cookie）。**要彻底解决只有一条路：一个能解析到这台机器的域名 + Let's Encrypt 签正式证书。**
@@ -380,7 +388,7 @@ cookie 的 `Secure` 跟着传输走，判据在 `server.request_is_https()`：�
 ## 开发
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q          # 433 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
+.venv\Scripts\python.exe -m pytest -q          # 440 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
 .venv\Scripts\python.exe -m animechat.cli doctor
 $env:ANIMECHAT_DEBUG=1; .venv\Scripts\python.exe -m animechat.cli run --reload
 ```

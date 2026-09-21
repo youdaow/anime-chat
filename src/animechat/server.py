@@ -280,6 +280,9 @@ def create_app(settings_override: Settings | None = None) -> Any:
     # cookie 活 30 天。手机上的浏览器不该天天要人敲一次 16 位口令；要提前收回权限就
     # `invite revoke`，那是在线的（访客行一删，签名再对也换不到权限）。
     SESSION_TTL = 30 * 86400
+    # 匿名设备的 cookie 给一年。它比登录会话更该活得久：这台设备的会话记录认的就是这枚
+    # cookie，到期等于把朋友的历史"清空"了（记录还在库里，他只是再也指不回去）。
+    ANON_TTL = 365 * 86400
 
     # 登录后才给看的东西里，这几条必须放行，否则登录页自己都打不开。
     # /api/health 也放过：systemd / 探针只关心进程活着没有，它返回的是版本和表情库计数。
@@ -321,10 +324,21 @@ def create_app(settings_override: Settings | None = None) -> Any:
         got = auth.unsign(s.auth_session_secret, request.cookies.get(auth.COOKIE_NAME, ""))
         if not got:
             return None
+        if auth.is_anon(got[0]):
+            # 匿名设备：签名对就认，库里没有它的行 —— 所以它永远拿不到 admin。
+            return {"id": got[0], "name": "", "admin": False}
         row = store().get_visitor(got[0])       # 被撤销的访客这里就是 None，cookie 当场作废
         if row is None:
             return None
         return {"id": row["id"], "name": row["name"], "admin": bool(row["admin"])}
+
+    def give_anon_cookie(resp: Response, secret: str, request: Request) -> Response:
+        """发一枚匿名设备身份。Secure 只在 TLS 上加（判据见 request_is_https）。"""
+        resp.set_cookie(auth.COOKIE_NAME,
+                        auth.sign(secret, auth.new_anon_id(), time.time() + ANON_TTL),
+                        max_age=ANON_TTL, httponly=True, samesite="lax", path="/",
+                        secure=request_is_https(request))
+        return resp
 
     def owner_scope(request: Request) -> str | None:
         """None = 不过滤（没开认证，或者来的就是主人/桥）。"""
@@ -348,7 +362,12 @@ def create_app(settings_override: Settings | None = None) -> Any:
         v = visitor_of(request)
         if v is None:
             if path.startswith("/api/") or path.startswith("/media/"):
-                return JSONResponse(status_code=401, content={"detail": "请先输入访问口令"})
+                return JSONResponse(status_code=401, content={"detail": "身份失效了，刷新页面重开一个"})
+            if request.method in ("GET", "HEAD") and s.auth_session_secret:
+                # 朋友拿到的是链接，不是口令：第一次点开就该是一台新设备的空页面。
+                # 就地放行 + 顺手发 cookie，而不是 303 到自己身上 —— 后者遇到不收 cookie
+                # 的客户端就是一个无限重定向。
+                return give_anon_cookie(await call_next(request), s.auth_session_secret, request)
             return RedirectResponse(url="/login", status_code=303)
         request.state.visitor = v
         if not v["admin"]:
@@ -435,7 +454,10 @@ def create_app(settings_override: Settings | None = None) -> Any:
         s = settings()
         db = store()
         owner = owner_scope(request)
-        return {
+        v = getattr(request.state, "visitor", None) or {}
+        # owner 为 None 有两种：认证没开（就是主人本机）和来的就是主人/桥。两种都是全权。
+        admin = owner is None or bool(v.get("admin"))
+        view = {
             "version": app.version,
             "settings": _settings_view(s),
             "characters": _char_views(db, owner=owner),
@@ -443,9 +465,12 @@ def create_app(settings_override: Settings | None = None) -> Any:
             "emotions": [{"key": k, "label": emotion_label(k)} for k in EMOTION_KEYS],
             "conversations": [c.model_dump() for c in db.list_conversations(owner=owner)],
             "prefs": {"last_character": db.get_pref("last_character", "")},
-            "stats": db.stats(),
-            "sticker_dir": str(DATA_DIR / "stickers"),
+            "stats": db.stats(owner=None if admin else owner),
+            "visitor": {"name": v.get("name") or "", "admin": admin},
         }
+        if admin:
+            view["sticker_dir"] = str(DATA_DIR / "stickers")
+        return view
 
     # ----------------------------------------------------------- 角色
     @app.get("/api/characters")

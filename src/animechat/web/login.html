@@ -26,18 +26,22 @@
   /* 错误单独占一行且固定高度：不然报错时整块往下跳，手机上像界面坏了。 */
   [role=status] { min-height: 20px; margin-top: 10px; font-size: 13px; color: #a33; }
   @media (prefers-color-scheme: dark) { [role=status] { color: #e88; } }
+  .back { margin: 22px 0 0; text-align: center; }
+  .back a { color: inherit; }
 </style>
 </head>
 <body>
 <main>
-  <h1>这台 AnimeChat 需要口令</h1>
-  <p>口令由主人发放，一次一个。换设备或清过浏览器缓存后要再输一次。</p>
+  <h1>主人登录</h1>
+  <p>访客不需要这一页 —— 回去就能聊，各看各的会话。输口令只有一种用途：让这台设备能改设置、
+     加角色、管表情包。</p>
   <form id="f" autocomplete="off">
     <input id="code" type="password" inputmode="latin" autocomplete="one-time-code"
            placeholder="访问口令" spellcheck="false" autofocus aria-label="访问口令">
     <button id="go" type="submit">进入</button>
     <div id="msg" role="status" aria-live="polite"></div>
   </form>
+  <p class="back"><a href="/">回去聊天</a></p>
 </main>
 <script>
   var f = document.getElementById("f"), code = document.getElementById("code"),

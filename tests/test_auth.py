@@ -151,9 +151,12 @@ def test_unauthenticated_requests_are_refused_or_redirected():
     assert client.get("/api/bootstrap", follow_redirects=False).status_code == 401
     assert client.get("/api/conversations").status_code == 401
     assert client.post("/api/chat", json={"conversation_id": 1, "content": "hi"}).status_code == 401
+    # 页面不再把陌生人推到登录页：第一次点开就地发一枚匿名身份（朋友拿到的是链接，不是口令）。
+    # 故意不 303 回自己 —— 不收 cookie 的客户端会因此无限重定向。
     r = client.get("/", follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/login"
-    assert client.get("/login").status_code == 200
+    assert r.status_code == 200
+    assert auth.COOKIE_NAME in r.headers.get("set-cookie", "")
+    assert client.get("/login").status_code == 200, "登录页还留着：主人自己从那儿升格"
     assert client.get("/api/health").status_code == 200, "探针不该被挡（它只报版本和计数）"
 
 
@@ -279,6 +282,76 @@ def test_character_view_previews_are_scoped_to_the_visitor():
     view_b = next(v for v in cb.get("/api/characters").json()["characters"] if v["id"] == char)
     assert view_a["last_at"] > 0 and "只有甲知道" in view_a["last_preview"]
     assert view_b["last_at"] == 0 and view_b["last_preview"] == "", "乙不该看到甲的预览"
+
+
+# ------------------------------------------------------------------ 匿名设备
+def guest_client() -> TestClient:
+    """一台刚点开链接的新设备（没有任何口令）。"""
+    c = on()
+    assert c.get("/").status_code == 200
+    assert auth.COOKIE_NAME in c.cookies, "首屏就该拿到身份 cookie"
+    return c
+
+
+def test_a_new_device_gets_an_empty_page_not_the_hosts_history():
+    host = TestClient(create_app(settings_override=Settings()))        # 认证没开 = 主人本机
+    cid = host.post("/api/conversations", json={"character_id": _first_char()}).json()["conversation"]["id"]
+
+    g = guest_client()
+    d = g.get("/api/bootstrap").json()
+    assert d["conversations"] == [], "新设备第一屏必须是空页面"
+    assert d["visitor"]["admin"] is False
+    assert g.get(f"/api/conversations/{cid}").status_code == 404
+    assert "sticker_dir" not in d, "服务器目录不该交给访客"
+    assert "db" not in d["stats"], "数据库路径同理"
+    assert g.get("/api/bootstrap").json()["stats"]["conversations"] == 0
+
+
+def test_two_anonymous_devices_are_separate_rooms():
+    char = _first_char()
+    x, y = guest_client(), guest_client()
+    cid = x.post("/api/conversations", json={"character_id": char}).json()["conversation"]["id"]
+    assert cid in [c["id"] for c in x.get("/api/conversations").json()["conversations"]]
+    assert cid not in [c["id"] for c in y.get("/api/conversations").json()["conversations"]], \
+        "两台设备各聊各的，谁也不该看见对方"
+    assert y.get(f"/api/conversations/{cid}").status_code == 404
+    assert y.get("/api/bootstrap").json()["conversations"] == []
+
+
+def test_anonymous_device_can_chat_but_cannot_touch_the_host_stuff():
+    g = guest_client()
+    assert g.post("/api/characters", json={"name": "塞一个"}).status_code == 403
+    assert g.patch("/api/settings", json={"user_name": "改成他"}).status_code == 403
+    cid = g.post("/api/conversations", json={"character_id": _first_char()}).json()["conversation"]["id"]
+    assert g.post("/api/chat", json={"conversation_id": cid, "content": "在吗"}).status_code == 200
+    assert g.get(f"/api/conversations/{cid}").json()["conversation"]["owner"].startswith(auth.ANON_PREFIX)
+
+
+def test_the_host_can_still_upgrade_the_same_browser_with_a_code():
+    """匿名不等于回不去：他自己在 /login 输一次口令，这台设备就是主人了。
+    这条钉的是"升格"这一步没被匿名 cookie 卡住（同一个 cookie 名要能被覆盖）。"""
+    _, code = make_visitor("主人", admin=True)
+    c = guest_client()
+    assert c.get("/api/bootstrap").json()["visitor"]["admin"] is False
+    assert login(c, code).status_code == 200
+    d = c.get("/api/bootstrap").json()
+    assert d["visitor"]["admin"] is True
+    assert "sticker_dir" in d, "升格之后主人专属的那些字段要回来"
+
+
+def test_a_forged_anon_cookie_is_still_refused():
+    """匿名身份靠前缀免查库，那签名就是唯一的凭据 —— 换个 "a" 开头的 id 不能进。"""
+    c = on()
+    c.cookies.set(auth.COOKIE_NAME, auth.sign("不是那个密钥", auth.new_anon_id(), time.time() + 600))
+    assert c.get("/api/bootstrap").status_code == 401
+    assert c.get("/api/conversations").status_code == 401
+
+
+def test_store_stats_can_be_scoped_to_one_owner():
+    db = store()
+    mine = db.stats(owner="a" + "0" * 16)
+    assert mine == {"conversations": 0, "messages": 0, "messages_with_sticker": 0}
+    assert "db" not in mine and "db" in db.stats()
 
 
 # ------------------------------------------------------------------ CLI

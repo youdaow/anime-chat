@@ -16,6 +16,15 @@ def test_api_error_shows_fastapi_detail():
     assert "payload.detail" in UI
 
 
+def test_host_only_entries_are_hidden_for_anonymous_devices():
+    """认证开着时，陌生人打开页面就是访客：整页「我」对他每一键都是 403。
+    真正的守卫在服务端（VISITOR_WRITE 白名单），这里锁的是前端别再留门把手，
+    而且判断依据必须是服务端给的 visitor.admin，不是自己猜。"""
+    assert "data.visitor" in JS, "访客/主人要按 bootstrap 的 visitor 来分"
+    assert "applyHostOnly()" in JS and "state.host === false" in JS
+    assert 'data-tab="me"' in JS, "「我」这一栏要能被藏掉"
+
+
 def test_web_assets_are_revalidated():
     """前端没有版本号，必须每次回源校验，否则改了样式刷新还是旧的。"""
     from fastapi.testclient import TestClient

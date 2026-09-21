@@ -12,6 +12,9 @@
    （库里删掉那行）他手上的 cookie 立刻失效，不必等到期。
 3. **不能拿「来自 127.0.0.1」当免检**。走 nginx 反代以后所有外网请求在应用眼里都是
    127.0.0.1，那样门等于没关。桥接要过这道门就带 x-animechat-token。
+
+4. **访客不需要口令**：没登记过的设备拿到的是一枚自签名的匿名 cookie（见 new_anon_id），
+   各看各的会话。口令在这套里只剩一个用途——**认出主人本人**，因为只有库里的行能带 admin。
 """
 from __future__ import annotations
 
@@ -38,6 +41,23 @@ def new_code() -> str:
 
 def new_secret() -> str:
     return secrets.token_urlsafe(32)
+
+
+# 匿名设备的 id 前缀。库里的真访客是 store 给的 "v"+8hex，这个 "a"+16hex 不可能撞上，
+# 靠前缀就能判出「这是台没登记过的设备」—— 所以它**不需要**在库里占一行。
+ANON_PREFIX = "a"
+
+
+def new_anon_id() -> str:
+    """给一台新设备发身份。不落库：朋友点开链接就该是他自己的空页面，
+    而不是先要有人替他登记。代价是这种身份**没法撤销**（无行可删），
+    收口的手段只剩改签名密钥（那会让所有人的 cookie 一起作废，包括主人自己的）。"""
+    return ANON_PREFIX + secrets.token_hex(8)
+
+
+def is_anon(visitor_id: str) -> bool:
+    v = str(visitor_id or "")
+    return v.startswith(ANON_PREFIX) and len(v) > len(ANON_PREFIX)
 
 
 def normalize_code(code: str) -> str:

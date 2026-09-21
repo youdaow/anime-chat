@@ -533,13 +533,28 @@ class Store:
                                 (prefix + "%",)).fetchall()
         return {r["key"]: r["value"] for r in rows}
 
-    def stats(self) -> dict:
+    def stats(self, owner: str | None = None) -> dict:
+        """不带 owner = 全局统计（主人本机、以及认证没开时的老行为）。
+        带 owner 就只数这一个人自己的，并且**不再交出数据库路径** —— 那对访客没有意义，
+        却把这台机器的目录结构说出去了。"""
         with self._raw() as conn:
-            conv = conn.execute("SELECT COUNT(*) c FROM conversations").fetchone()["c"]
-            msg = conn.execute("SELECT COUNT(*) c FROM messages").fetchone()["c"]
-            sticker = conn.execute(
-                "SELECT COUNT(*) c FROM messages WHERE stickers IS NOT NULL AND stickers != '[]'").fetchone()["c"]
-        return {"conversations": conv, "messages": msg, "messages_with_sticker": sticker, "db": str(self.path)}
+            if owner is None:
+                conv = conn.execute("SELECT COUNT(*) c FROM conversations").fetchone()["c"]
+                msg = conn.execute("SELECT COUNT(*) c FROM messages").fetchone()["c"]
+                sticker = conn.execute(
+                    "SELECT COUNT(*) c FROM messages WHERE stickers IS NOT NULL AND stickers != '[]'").fetchone()["c"]
+            else:
+                mine = "JOIN conversations c ON c.id = m.conversation_id WHERE c.owner = ?"
+                conv = conn.execute("SELECT COUNT(*) c FROM conversations WHERE owner=?",
+                                    (owner,)).fetchone()["c"]
+                msg = conn.execute("SELECT COUNT(*) c FROM messages m " + mine, (owner,)).fetchone()["c"]
+                sticker = conn.execute("SELECT COUNT(*) c FROM messages m " + mine +
+                                       " AND m.stickers IS NOT NULL AND m.stickers != '[]'",
+                                       (owner,)).fetchone()["c"]
+        out = {"conversations": conv, "messages": msg, "messages_with_sticker": sticker}
+        if owner is None:
+            out["db"] = str(self.path)
+        return out
 
 
 def _finite_timestamp(value: object, default: float | None) -> float | None:
