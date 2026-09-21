@@ -315,14 +315,14 @@ anime-chat/
 **换了端口打不开？** 只改过端口没改绑定：这个界面没有鉴权，请保持 `127.0.0.1`，别暴露到公网。
 **联系人页整个不见了、点哪都没反应？** 布局被撑破：某层缺 `min-height:0`，会话一长聊天页就比视口高，`body{overflow:hidden}` 被输入框的 focus() 滚到底，整块界面滚出屏幕而且**滚不回来**（overflow:hidden 时滚轮不起作用）。已修，并加了防回归测试 `test_app_uses_inner_scroll_not_page_scroll`。自检：F12 执行 `document.querySelector('.char-list').getBoundingClientRect().top`，负数就是又被撑破了。
 **切页后三页同时显示 / 一页都看不见？** `.main`、`.page-head` 这些规则自带 `display`，会把 `[hidden]` 的默认 `display:none` 盖掉——所以 `.page[hidden] { display: none !important; }` 这一条不能省。反过来，如果三页都不显示，多半是 `#app` 的 `data-tab` 和页面的 `hidden` 不同步（都走 `switchTab()`，别在别处直接改 `hidden`）。防回归：`test_three_pages_share_one_tabbar`。
-**红点消不掉？** 那个角色确实还有没打开过的回复：点进 TA（标签页得在前台）才会把水位线推过去。红点算的是 TA 名下所有会话——包括你在飞书里聊的那条，所以手机上聊过、网页没点开，网页这边就会一直亮着。
+**红点消不掉？** 先弄清它算的是什么：红点只数**「点这一行会进去的那条单聊」**，TA 名下的飞书群镜像会话不算（网页里也进不去那条，以前把群里的未读一起加进来，就变成永远清不掉的死点）。还亮着就是那条单聊里确实有没看的回复 —— 点进去才算读到，而且**标签页得在前台**：在后台打开不清水位，切回前台会补一次。防回归：`test_row_badge_only_counts_the_conversation_a_tap_opens`。
 **给 A 发了消息，切去看 B，B 名字底下也写着「正在输入中」？** 已修，同一个根因还有第二个更糟的症状：A 的回复会流着流着画到 B 的窗口里。原因是这两样东西都只记「有没有人在等 / 屏幕上那个消息流」，不记「等的是哪个会话」。现在等待状态存的是会话 id（`typingConv`），流式气泡也绑定了自己的会话，切走就只攒内容不画屏，切回来还在等就重新提示。防回归：`test_typing_hint_belongs_to_the_conversation_that_is_waiting` 和 `test_inflight_stream_cannot_render_into_another_conversation`。
 **想换数据目录（挪盘）？** 设 `ANIMECHAT_DATA_DIR=D:/animechat-data` 再启动，旧数据手动拷过去即可。
 
 ## 开发
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q          # 401 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
+.venv\Scripts\python.exe -m pytest -q          # 412 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
 .venv\Scripts\python.exe -m animechat.cli doctor
 $env:ANIMECHAT_DEBUG=1; .venv\Scripts\python.exe -m animechat.cli run --reload
 ```
