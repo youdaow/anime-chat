@@ -148,16 +148,45 @@ def test_auth_off_by_default_leaves_everything_open():
 
 def test_unauthenticated_requests_are_refused_or_redirected():
     client = on()
-    assert client.get("/api/bootstrap", follow_redirects=False).status_code == 401
-    assert client.get("/api/conversations").status_code == 401
-    assert client.post("/api/chat", json={"conversation_id": 1, "content": "hi"}).status_code == 401
-    # 页面不再把陌生人推到登录页：第一次点开就地发一枚匿名身份（朋友拿到的是链接，不是口令）。
-    # 故意不 303 回自己 —— 不收 cookie 的客户端会因此无限重定向。
+    # 页面：第一次点开就是页面本身 + 一枚身份，不该被推到登录页
     r = client.get("/", follow_redirects=False)
     assert r.status_code == 200
     assert auth.COOKIE_NAME in r.headers.get("set-cookie", "")
     assert client.get("/login").status_code == 200, "登录页还留着：主人自己从那儿升格"
     assert client.get("/api/health").status_code == 200, "探针不该被挡（它只报版本和计数）"
+
+
+def test_an_api_first_client_still_gets_an_identity():
+    """手机 WebView 会复用缓存的 HTML，第一个请求可能就是 /api/bootstrap —— 那种客户端
+    永远等不到"页面响应"，也就拿不到 cookie，界面于是显示成「没有模型配置」空壳
+    （他手机上实际撞到的就是这个）。所以没带凭据的请求一律当场发身份，不分页面还是 API。"""
+    client = on()
+    r = client.get("/api/bootstrap", follow_redirects=False)
+    assert r.status_code == 200, "第一次请求就该成功，不要逼客户端自己重试"
+    assert auth.COOKIE_NAME in r.headers.get("set-cookie", "")
+    assert r.json()["visitor"]["admin"] is False
+    assert client.get("/api/conversations").json()["conversations"] == []
+    # 自动给身份 ≠ 自动给权限
+    assert client.patch("/api/settings", json={"user_name": "改成他"}).status_code == 403
+    assert client.post("/api/characters", json={"name": "塞一个"}).status_code == 403
+    assert client.get("/api/conversations/1").status_code == 404
+
+
+def test_a_credential_that_fails_to_verify_is_refused_not_replaced():
+    """反过来：带了凭据却验不过的，不能被悄悄换成一个空白新用户。那会把「认证不过」
+    伪装成「会话不存在」，被撤销的人还会以为自己记录被清了；桥的令牌配错也一样查不动。"""
+    vid, code = make_visitor("待撤2")
+    c = on()
+    assert login(c, code).status_code == 200
+    assert store().revoke_visitor(vid) is True
+    r = c.get("/api/bootstrap")
+    assert r.status_code == 401, "撤销的行要明着拒，不是发个新身份糊过去"
+    assert auth.COOKIE_NAME not in r.headers.get("set-cookie", "")
+    f = on()
+    # 头值必须是 ASCII：httpx 会直接拒绝发非 ASCII 头（真要测中文头走 test_non_ascii_… 那条）
+    bad = f.get("/api/bootstrap", headers={auth.BRIDGE_HEADER: "wrong-token-on-purpose"})
+    assert bad.status_code == 401
+    assert bad.headers.get("set-cookie") is None, "令牌打错也不该顺手发匿名身份"
 
 
 def test_login_sets_a_working_cookie_and_wrong_code_does_not():
@@ -254,8 +283,11 @@ def test_admin_visitor_is_the_host_and_sees_everything():
 
 def test_bridge_token_bypasses_the_cookie_gate():
     client = on()
-    assert client.get("/api/bootstrap").status_code == 401
-    assert client.get("/api/bootstrap", headers={auth.BRIDGE_HEADER: BRIDGE}).status_code == 200
+    tok = client.get("/api/bootstrap", headers={auth.BRIDGE_HEADER: BRIDGE})
+    assert tok.status_code == 200
+    assert tok.json()["visitor"]["admin"] is True, "桥是以主人本人的身份在操作"
+    anon = on().get("/api/bootstrap")
+    assert anon.status_code == 200 and anon.json()["visitor"]["admin"] is False
     assert client.get("/api/bootstrap", headers={auth.BRIDGE_HEADER: BRIDGE + "x"}).status_code == 401
 
 
@@ -339,12 +371,23 @@ def test_the_host_can_still_upgrade_the_same_browser_with_a_code():
     assert "sticker_dir" in d, "升格之后主人专属的那些字段要回来"
 
 
-def test_a_forged_anon_cookie_is_still_refused():
-    """匿名身份靠前缀免查库，那签名就是唯一的凭据 —— 换个 "a" 开头的 id 不能进。"""
+def test_a_forged_anon_cookie_buys_you_a_blank_room_and_nothing_else():
+    """匿名身份是"免查库"的，签名就是唯一凭据。伪造一枚对不上签名的，会被当成第一次来
+    而重新发一枚 —— 关键是那只会给你一个**空白**身份，绝不因为 id 前缀是 "a" 就放行。"""
     c = on()
     c.cookies.set(auth.COOKIE_NAME, auth.sign("不是那个密钥", auth.new_anon_id(), time.time() + 600))
-    assert c.get("/api/bootstrap").status_code == 401
-    assert c.get("/api/conversations").status_code == 401
+    r = c.get("/api/bootstrap")
+    assert auth.COOKIE_NAME in r.headers.get("set-cookie", ""), "验不过的匿名 cookie 当场换一枚新的"
+    d = r.json()
+    assert d["visitor"]["admin"] is False and d["conversations"] == []
+    assert d["stats"]["conversations"] == 0
+    assert c.get("/api/conversations").json()["conversations"] == []
+    # 主人的会话仍然读不到（这条会话是真存在的：见 test_two_visitors_cannot_see_each_other 的口径）
+    other, oc = make_visitor("有货的")
+    v = on()
+    login(v, oc)
+    hid = v.post("/api/conversations", json={"character_id": _first_char()}).json()["conversation"]["id"]
+    assert c.get(f"/api/conversations/{hid}").status_code == 404
 
 
 def test_store_stats_can_be_scoped_to_one_owner():

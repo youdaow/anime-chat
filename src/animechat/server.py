@@ -309,30 +309,47 @@ def create_app(settings_override: Settings | None = None) -> Any:
             return fwd
         return peer or "unknown"
 
-    def visitor_of(request: Request) -> dict | None:
+    def resolve_visitor(request: Request) -> tuple[dict | None, str]:
         """cookie 里的签名换回访客；桥接带 x-animechat-token 也认（它调的是本机 API）。
+
+        返回 `(访客, 来路)`。来路是门口用来决定「要不要顺手发一枚匿名身份」的：
+          "ok"   —— 认出来了
+          "none" —— 这台设备没带任何凭据（或带的是一枚过期的匿名 cookie），第一次来
+          "bad"  —— 带了凭据但对不上：被撤销的访客、令牌打错的飞书桥
+
+        只有 "none" 会自动发身份，"bad" 必须照原样拒 —— 否则被撤销的人一刷新就变成一个
+        崭新的空白账号，他会以为自己的记录被清了；桥的令牌配错也会从「被挡在认证外面」
+        变成「会话不存在」，那种错没人查得动。
 
         令牌比较转成 bytes：compare_digest 收 str 只接受纯 ASCII，头里带个非 ASCII
         字节就会 TypeError，那是人家随手一条请求就能在门口打出的 500。
         """
         s = settings()
         tok = request.headers.get(auth.BRIDGE_HEADER, "")
-        if tok and s.auth_bridge_token and \
-                hmac.compare_digest(tok.encode("utf-8"), s.auth_bridge_token.encode("utf-8")):
-            # 桥带令牌进来 = 以主人本人的身份操作：飞书那些会话本来就是他的
-            return {"id": "", "name": "飞书桥接", "admin": True}
-        got = auth.unsign(s.auth_session_secret, request.cookies.get(auth.COOKIE_NAME, ""))
+        if tok:
+            if s.auth_bridge_token and \
+                    hmac.compare_digest(tok.encode("utf-8"), s.auth_bridge_token.encode("utf-8")):
+                # 桥带令牌进来 = 以主人本人的身份操作：飞书那些会话本来就是他的
+                return {"id": "", "name": "飞书桥接", "admin": True}, "ok"
+            return None, "bad"
+        raw = request.cookies.get(auth.COOKIE_NAME, "")
+        if not raw:
+            return None, "none"
+        got = auth.unsign(s.auth_session_secret, raw)
         if not got:
-            return None
+            # 过期/无效的匿名 cookie 就当作第一次来（那台设备的历史本来就只存在这枚 cookie 里）；
+            # 口令制访客的 cookie 验不过则明说 —— 让他重新登录，而不是静默失忆。
+            head = raw.split(".", 1)[0]
+            return None, ("none" if auth.is_anon(head) else "bad")
         if auth.is_anon(got[0]):
             # 匿名设备：签名对就认，库里没有它的行 —— 所以它永远拿不到 admin。
-            return {"id": got[0], "name": "", "admin": False}
+            return {"id": got[0], "name": "", "admin": False}, "ok"
         row = store().get_visitor(got[0])       # 被撤销的访客这里就是 None，cookie 当场作废
         if row is None:
-            return None
-        return {"id": row["id"], "name": row["name"], "admin": bool(row["admin"])}
+            return None, "bad"
+        return {"id": row["id"], "name": row["name"], "admin": bool(row["admin"])}, "ok"
 
-    def give_anon_cookie(resp: Response, secret: str, request: Request) -> Response:
+    def anon_cookie(resp: Response, secret: str, request: Request) -> Response:
         """发一枚匿名设备身份。Secure 只在 TLS 上加（判据见 request_is_https）。"""
         resp.set_cookie(auth.COOKIE_NAME,
                         auth.sign(secret, auth.new_anon_id(), time.time() + ANON_TTL),
@@ -359,16 +376,23 @@ def create_app(settings_override: Settings | None = None) -> Any:
             return await call_next(request)        # 登录自己管限速
         if request.method in ("GET", "HEAD", "OPTIONS") and path in PUBLIC_PATHS:
             return await call_next(request)
-        v = visitor_of(request)
+        v, kind = resolve_visitor(request)
+        minted = False
+        if v is None and kind == "none" and s.auth_session_secret:
+            # 朋友拿到的是链接，不是口令：没带凭据的请求就当一台新设备，给他一个空白身份。
+            # cookie 挂在**这次响应**上（不是先 303 一跳再发）：不收 cookie 的客户端不会
+            # 因此无限重定向，而 API 先行的客户端 —— 比如复用了缓存 HTML 的手机 WebView，
+            # 第一个请求就是 /api/bootstrap —— 也能当场拿到身份，不会卡在「没有模型配置」。
+            v = {"id": auth.new_anon_id(), "name": "", "admin": False}
+            minted = True
+
+        def done(resp):
+            return anon_cookie(resp, s.auth_session_secret, request) if minted else resp
+
         if v is None:
             if path.startswith("/api/") or path.startswith("/media/"):
-                return JSONResponse(status_code=401, content={"detail": "身份失效了，刷新页面重开一个"})
-            if request.method in ("GET", "HEAD") and s.auth_session_secret:
-                # 朋友拿到的是链接，不是口令：第一次点开就该是一台新设备的空页面。
-                # 就地放行 + 顺手发 cookie，而不是 303 到自己身上 —— 后者遇到不收 cookie
-                # 的客户端就是一个无限重定向。
-                return give_anon_cookie(await call_next(request), s.auth_session_secret, request)
-            return RedirectResponse(url="/login", status_code=303)
+                return done(JSONResponse(status_code=401, content={"detail": "登录状态已失效，重新输一次口令"}))
+            return done(RedirectResponse(url="/login", status_code=303))
         request.state.visitor = v
         if not v["admin"]:
             m = PATH_CONV_ID.match(path)
@@ -377,11 +401,11 @@ def create_app(settings_override: Settings | None = None) -> Any:
                      else store().message_owner(int(mm.group(1))) if mm else None)
             if owner is not None and owner != v["id"]:
                 # 404 而不是 403：别人的会话存不存在，不该让访客知道
-                return JSONResponse(status_code=404, content={"detail": "会话不存在"})
+                return done(JSONResponse(status_code=404, content={"detail": "会话不存在"}))
             if request.method not in ("GET", "HEAD", "OPTIONS") and \
                     not any(rx.match(path) for rx in VISITOR_WRITE):
-                return JSONResponse(status_code=403, content={"detail": "只有主人能改这里"})
-        return await call_next(request)
+                return done(JSONResponse(status_code=403, content={"detail": "只有主人能改这里"}))
+        return done(await call_next(request))
 
     @app.get("/login", include_in_schema=False)
     def login_page() -> Response:
@@ -1366,8 +1390,9 @@ def create_app(settings_override: Settings | None = None) -> Any:
             raise HTTPException(400, exc.hint or str(exc)) from exc
 
     @app.get("/api/stats")
-    def stats() -> dict:
-        return {"store": store().stats(), "stickers": library().stats()}
+    def stats(request: Request) -> dict:
+        # 按人收口：全局条数和数据库路径都是主人的东西
+        return {"store": store().stats(owner=owner_scope(request)), "stickers": library().stats()}
 
     @app.exception_handler(llm.LLMError)
     async def llm_error_handler(_req: Request, exc: llm.LLMError) -> JSONResponse:
