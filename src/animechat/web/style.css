@@ -448,6 +448,19 @@ button { cursor: pointer; border: 0; background: none; }
 /* ------------------------------------------------------------------ 输入区 */
 .composer { padding: 8px 22px 12px; background: var(--panel); border-top: 1px solid var(--line); }
 /* 输入区跟消息流一样铺满，不再各自居中 800px：两条宽度对不齐会显出接缝。 */
+/* 输入框上方的关键词建议：一排小图横向滚，最多 8 张，没命中就整行不存在。
+   .suggest-row 有 display:flex，会盖掉 hidden 的 UA 默认值 —— 必须显式关掉。 */
+.suggest-row {
+  display: flex; gap: 6px; align-items: center; overflow-x: auto;
+  scrollbar-width: none; -webkit-overflow-scrolling: touch; padding-bottom: 6px;
+  animation: rise .18s ease both;
+}
+.suggest-row[hidden] { display: none; }
+.suggest-row::-webkit-scrollbar { display: none; }
+.suggest { flex: none; width: 46px; height: 46px; padding: 0; overflow: hidden;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); }
+.suggest img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.suggest.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .attach-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding-bottom: 8px; }
 .attach-clear { font-size: 11.5px; color: var(--text-soft); border: 1px solid var(--line);
   border-radius: 8px; padding: 4px 9px; }
@@ -876,7 +889,7 @@ button:active, .row:active, .pick-row:active, .sticker-cell:active, .cell-btn:ac
 /* 低端安卓机每条消息的 0.5s 弹入都掉帧；有晕动偏好的人看着也不舒服。 */
 @media (prefers-reduced-motion: reduce) {
   .msg.enter, .msg.enter .bubble, .msg.enter .avatar, .msg.enter .sticker-shot,
-  .empty-art, .picker, .modal, .toast { animation: none !important; }
+  .empty-art, .picker, .modal, .toast, .suggest-row { animation: none !important; }
   .messages { scroll-behavior: auto; }
   .page { transition: none; }
   button, .row, .pick-row, .sticker-cell, .cell-btn, .round, .tabbar button, .chip { transition: none; }

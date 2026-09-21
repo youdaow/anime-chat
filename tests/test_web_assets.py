@@ -115,6 +115,23 @@ def test_the_picker_has_one_filter_strip_not_two_rows():
     assert ".picker-emotions { display: flex; gap: 5px; flex: none; }" in CSS, "滚动交给整条带，别两排各自滚"
 
 
+def test_typing_surfaces_matching_stickers_above_the_input():
+    """打字时按关键词浮出一排相关表情：摆在输入框上方、没命中就整行不存在、
+    表情面板开着时让位（那儿已经是全库）。"""
+    assert 'class="suggest-row" id="suggest-row" hidden' in HTML
+    assert HTML.index('id="suggest-row"') < HTML.index('id="attach-row"') < HTML.index('id="input"'), \
+        "顺序要是指南 → 已选 → 输入框"
+    fn = JS[JS.index("function suggestStickers("):JS.index("function togglePicker(")]
+    assert "if (t.length < 2) return [];" in fn, "单字会撞出一堆不相干的图"
+    assert "t.slice(i, i + 2)" in fn, "二元组那一档：「加油加油」要能撞上标签「粉毛举拳加油」"
+    assert 'qs("picker").hidden ? suggestStickers' in fn, "面板开着时别再叠一排"
+    assert "slice(0, 8)" in fn, "最多八张，别把输入区顶成一屏图"
+    assert "setTimeout(renderSuggest, 200)" in JS, "边打字边查全库会一顿"
+    assert ".suggest-row[hidden] { display: none; }" in CSS, "display:flex 会盖掉 hidden"
+    rm = CSS[CSS.index("@media (prefers-reduced-motion"):]
+    assert ".suggest-row" in rm, "晕动偏好下建议条不该弹"
+
+
 def test_web_assets_are_revalidated():
     """前端没有版本号，必须每次回源校验，否则改了样式刷新还是旧的。"""
     from fastapi.testclient import TestClient

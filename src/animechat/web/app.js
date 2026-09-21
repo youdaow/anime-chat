@@ -793,7 +793,12 @@ function messageNode(msg) {
     navigator.clipboard.writeText(text).then(() => toast("已复制"), () => toast("浏览器不让复制", "err"));
   } }));
   meta.appendChild(el("button", { text: me ? "重发这条" : "重新生成", onclick: () => {
-    if (me) { qs("input").value = text; qs("input").focus({ preventScroll: true }); }
+    if (me) {
+      // 直接改 value 不会触发 input 事件，建议那一排要自己刷一次
+      qs("input").value = text;
+      qs("input").focus({ preventScroll: true });
+      renderSuggest();
+    }
     else regenerate();
   } }));
   meta.appendChild(el("button", { text: "删到这儿", onclick: async () => {
@@ -989,6 +994,7 @@ async function send(opts) {
     renderAttach();
     input.value = "";
     autosize(input);
+    renderSuggest();
     // 表情面板挡着聊天流，选完发完就该让位；以前要手动点 × 才能看到回复。
     if (!qs("picker").hidden) togglePicker(false);
   }
@@ -1407,6 +1413,57 @@ function handleEvent(raw, live, setStatus) {
 
 /* ---------------------------------------------------------------- 表情面板 */
 
+/* 打字时按关键词挑几张相关的表情，浮在输入框上方。三档，从强到弱：
+   3 整词出现在句子里（"好傲娇啊" → 傲娇）
+   2 正在打的词是标签的一部分（"傲" 打全之前先给 傲娇）
+   1 句子里任二元组落在标签里（"加油加油" → 粉毛举拳加油）—— 前两档没命中才轮得到它
+   少于两个字不出：单字会撞出一堆不相干的图，那比没有建议更烦。 */
+function suggestStickers(text) {
+  const t = String(text || "").toLowerCase().trim();
+  if (t.length < 2) return [];
+  const grams = [];
+  for (let i = 0; i + 2 <= t.length; i++) grams.push(t.slice(i, i + 2));
+  const scored = [];
+  for (const st of state.stickers) {
+    let best = 0;
+    for (const raw of [st.label].concat(st.tags || []).concat([st.emotion_label])) {
+      const w = String(raw || "").toLowerCase().trim();
+      if (!w || w === "neutral") continue;
+      if (best < 3 && t.indexOf(w) >= 0) best = Math.max(best, 3);
+      else if (best < 2 && w.indexOf(t) >= 0) best = Math.max(best, 2);
+      else if (best < 1) { for (const g of grams) { if (w.indexOf(g) >= 0) { best = 1; break; } } }
+    }
+    if (best) scored.push([best, st.uses || 0, st]);
+  }
+  scored.sort((a, b) => b[0] - a[0] || b[1] - a[1]);
+  return scored.slice(0, 8).map((x) => x[2]);
+}
+
+function renderSuggest() {
+  const row = qs("suggest-row");
+  if (!row) return;
+  // 表情面板开着的时候不再给建议 —— 那儿已经是全库，两排图叠着只会互相挡
+  const hits = qs("picker").hidden ? suggestStickers(qs("input").value) : [];
+  const picked = new Set(state.attach.map((s) => s.id));
+  clear(row);
+  row.hidden = !hits.length;
+  for (const st of hits) {
+    row.appendChild(el("button", {
+      class: "suggest" + (picked.has(st.id) ? " on" : ""),
+      title: st.label + (picked.has(st.id) ? "（已选，点一下取消）" : "（加入这条消息）"),
+      "aria-label": "加入表情 " + st.label,
+      onclick: () => toggleAttach(st),
+    }, [el("img", { src: st.url, alt: st.label, loading: "lazy" })]));
+  }
+}
+
+let suggestTimer = null;
+
+function scheduleSuggest() {
+  clearTimeout(suggestTimer);
+  suggestTimer = setTimeout(renderSuggest, 200);   // 边打字边查全库会一顿，等手停下来再查
+}
+
 function togglePicker(force) {
   const picker = qs("picker");
   const want = force === undefined ? picker.hidden : force;
@@ -1422,6 +1479,7 @@ function togglePicker(force) {
       if (state.picker.tab === "web") qs("picker-q").focus({ preventScroll: true });
     }
   }
+  renderSuggest();   // 面板开→建议让位，面板关→建议回来
 }
 
 function filteredStickers() {
@@ -1599,6 +1657,7 @@ function renderAttach() {
       onclick: () => { state.attach = []; renderAttach(); renderPicker(); } }));
   }
   renderComposerHint();
+  renderSuggest();   // 已选的圈要在建议那一排上跟着变
 }
 
 function renderComposerHint() {
@@ -1757,7 +1816,7 @@ function bindStatic() {
   qs("messages").addEventListener("scroll", paintNewMessages);
   qs("side-q").addEventListener("input", (ev) => { state.sideQ = ev.target.value; renderContacts(); });
   const input = qs("input");
-  input.addEventListener("input", () => autosize(input));
+  input.addEventListener("input", () => { autosize(input); scheduleSuggest(); });
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); }
     if (ev.key === "Escape") togglePicker(false);

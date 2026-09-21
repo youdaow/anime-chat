@@ -70,6 +70,9 @@
         <button id="btn-ai-next" title="让下一个角色接上一句">让 TA 接话</button>
         <button id="btn-ai-loop" title="不用你插话，让她们自己聊几轮">自己聊几轮</button>
       </div>
+      <!-- 打字时按关键词浮出来的一排相关表情（没有命中就整行不存在）。
+           放在「已选」上面：先看建议、再看选中的、最后才是输入框。 -->
+      <div class="suggest-row" id="suggest-row" hidden></div>
       <div class="attach-row" id="attach-row" hidden></div>
       <div class="composer-row">
         <!-- 图标换成「贴纸卡」：原来两张 emoji 脸并排，分不出哪个是选表情、哪个是传图。
