@@ -129,7 +129,6 @@ button { cursor: pointer; border: 0; background: none; }
 }
 .page-head .side-tools button:hover, .page-head .file-btn:hover, .page-head .btn-lead:hover { color: var(--accent); border-color: var(--accent); }
 .page-scroll { flex: 1; overflow: auto; min-height: 0; padding: 12px 14px 18px; background: var(--panel); }
-.page-note { font-size: 11.5px; color: var(--text-faint); margin: 12px 4px 0; line-height: 1.7; }
 
 /* 推入页：聊天和名片从栏里点进来，占满整格（连第二行的选项卡一起盖住），
    所以聊天时看不见 tab —— 跟微信一致。z-index 保证它压在同格的列表页上面。 */

@@ -388,7 +388,7 @@ function renderChatList() {
     .sort((a, b) => lastOf(b).at - lastOf(a).at || String(a.name).localeCompare(String(b.name), "zh"));
   clear(box);
   if (!chars.length) {
-    box.appendChild(el("div", { class: "pill", text: q ? "没有匹配「" + q + "」的聊天" : "还没有聊天，到「联系人」点一个人开始" }));
+    box.appendChild(el("div", { class: "pill", text: q ? "没有匹配「" + q + "」的聊天" : "还没有聊天" }));
     return;
   }
   for (const char of chars) {

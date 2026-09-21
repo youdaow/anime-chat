@@ -26,12 +26,13 @@
       <button id="btn-account" class="btn-lead" hidden></button>
       <h2>对话</h2>
       <span class="side-tools">
-        <button id="btn-find-chat" title="挑一个人开聊">＋找人聊</button>
+        <!-- 深浅色开关放在这一页头上，不放「我」页：访客没有那一栏，以前他根本换不了主题。 -->
+        <button id="btn-theme" class="theme-btn" title="切换深浅色">☾</button>
+        <button id="btn-find-chat" class="icon-btn" title="找人聊" aria-label="找人聊">＋</button>
       </span>
     </header>
     <div class="page-scroll">
       <div id="chat-list" class="chat-list"></div>
-      <p class="page-note">只列聊过的人；要找人开聊去「联系人」。点一行进聊天，左上角 ← 回到这里。</p>
     </div>
   </main>
 
@@ -132,7 +133,6 @@
     </div>
     <div class="page-scroll">
       <div id="char-list" class="char-list"></div>
-      <p class="page-note">点一个人先看名片，名片上按「发消息」才开始聊；编辑 / 复制 / 导出 / 隐藏 / 删除也在名片上。</p>
     </div>
   </main>
 
@@ -141,7 +141,7 @@
     <header class="page-head">
       <h2>我</h2>
       <span class="side-tools">
-        <button id="btn-theme" class="theme-btn" title="切换深浅色">☾</button>
+        <!-- 深浅色开关搬去「对话」页头了（访客没有这一栏）。全页只留这一个 #btn-theme。 -->
         <button id="btn-sfx" class="icon-btn" title="发送 / 收到消息的音效开关">🔊</button>
       </span>
     </header>

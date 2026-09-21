@@ -57,6 +57,17 @@ def test_a_brand_new_device_is_not_shoved_into_a_chat():
     assert "else if (options.create === false)" in JS, "selectCharacter 要认这个开关"
 
 
+def test_the_front_page_toolbar_carries_theme_switch_and_a_bare_plus():
+    """三件事都是「访客那一屏」的事：深浅色开关以前只长在「我」页头上（访客没有那一栏，
+    等于换不了主题）；开聊那颗以前写成「＋找人聊」一整句；列表页底下还压着一行操作说明。"""
+    chat = HTML[HTML.index('id="page-chat"'):HTML.index('id="page-thread"')]
+    assert 'id="btn-theme"' in chat, "深浅色开关要长在第一屏，访客也够得着"
+    assert HTML.count('id="btn-theme"') == 1, "开关只该有一个（两个同名 id 只会剩一个能用）"
+    assert 'id="btn-find-chat" class="icon-btn"' in chat and "＋</button>" in chat
+    assert "找人聊</button>" not in chat, "按钮上别再写字，一个加号够了"
+    assert "page-note" not in HTML, "页面里不摆操作说明"
+
+
 def test_web_assets_are_revalidated():
     """前端没有版本号，必须每次回源校验，否则改了样式刷新还是旧的。"""
     from fastapi.testclient import TestClient
