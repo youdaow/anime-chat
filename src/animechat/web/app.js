@@ -1472,12 +1472,9 @@ function renderPicker() {
     cell.addEventListener("click", () => toggleAttach(st));
     grid.appendChild(cell);
   }
-  const foot = clear(qs("picker-foot"));
-  foot.appendChild(el("span", { text: "共 " + list.length + " 张 · 点选加入，最多 3 张" }));
-  foot.appendChild(el("button", { text: "管理表情库", onclick: () => openStickerLibrary(ctx) }));
-  if (state.attach.length) {
-    foot.appendChild(el("button", { text: "清空已选", onclick: () => { state.attach = []; renderAttach(); renderPicker(); } }));
-  }
+  // 这一档不放东西：张数、"最多 3 张"、管理表情库原来都堆在这儿，把图挤成一行。
+  // 张数在「我 → 表情包」那颗按钮的悬停里，超限会当场提示，管理入口也在那一页。
+  clear(qs("picker-foot"));
 }
 
 async function renderWebPicker(grid) {
@@ -1487,6 +1484,7 @@ async function renderWebPicker(grid) {
     grid.appendChild(el("div", { class: "picker-loading" }, [
       el("div", { text: "输入关键词后回车搜索（例如：傲娇 表情 / 柴田雪成 戳图）" }),
       el("div", { text: p.note || "默认走 Bing 图片（免 Key，不用注册），它没结果时自动退到 DuckDuckGo。" }),
+      el("div", { text: "点图上的 ＋ 会先存进表情库再发出去 —— 直接挂外链容易挂。" }),
     ]));
     return;
   }
@@ -1495,7 +1493,7 @@ async function renderWebPicker(grid) {
       el("img", { src: item.thumb_url || item.image_url, alt: item.label, loading: "lazy", referrerpolicy: "no-referrer" }),
       el("figcaption", { text: (item.label || "").slice(0, 12) }),
       el("button", {
-        class: "cell-btn", text: "＋", title: "存进表情库并发出去",
+        class: "cell-btn", text: "＋", title: "存进表情库并发出去（来源 " + (p.provider || "auto") + "）",
         onclick: async (ev) => {
           ev.stopPropagation();
           const btn = ev.currentTarget;
@@ -1519,9 +1517,10 @@ async function renderWebPicker(grid) {
     cell.addEventListener("click", () => lightbox(item.image_url, item.label));
     grid.appendChild(cell);
   }
+  // 联网这一档只在真有话要说时占一行（搜索结果本身要地方）。
+  // 「点 ＋ 存进表情库、别用外链」已经写在空结果的提示里，来源写在悬停里。
   const foot = clear(qs("picker-foot"));
-  foot.appendChild(el("span", { text: "来源：" + p.provider + " · 点 ＋ 存进表情库（别直接外链，容易挂）" }));
-  if (p.note) foot.appendChild(el("span", { text: p.note }));
+  if (p.note) foot.appendChild(el("span", { class: "picker-note", text: p.note }));
 }
 
 // 联网搜索的关键词 → 中文标签 + 情绪。库里全是中文标签，只挂一个英文搜索词的话，
@@ -1592,6 +1591,11 @@ function renderAttach() {
       el("img", { src: st.url, alt: st.label }),
       el("button", { text: "×", title: "移除", onclick: () => toggleAttach(st) }),
     ]));
+  }
+  // 「清空已选」原来长在表情面板底下 —— 那里现在只放图，选完的东西在哪儿就在哪儿清。
+  if (state.attach.length > 1) {
+    row.appendChild(el("button", { class: "attach-clear", text: "清空",
+      onclick: () => { state.attach = []; renderAttach(); renderPicker(); } }));
   }
   renderComposerHint();
 }

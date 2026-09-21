@@ -448,7 +448,9 @@ button { cursor: pointer; border: 0; background: none; }
 /* ------------------------------------------------------------------ 输入区 */
 .composer { padding: 8px 22px 12px; background: var(--panel); border-top: 1px solid var(--line); }
 /* 输入区跟消息流一样铺满，不再各自居中 800px：两条宽度对不齐会显出接缝。 */
-.attach-row { display: flex; gap: 8px; flex-wrap: wrap; padding-bottom: 8px; }
+.attach-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding-bottom: 8px; }
+.attach-clear { font-size: 11.5px; color: var(--text-soft); border: 1px solid var(--line);
+  border-radius: 8px; padding: 4px 9px; }
 /* 群聊控制条：谁下一个开口 + 点名 + 让她们自己聊 */
 .group-bar {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
@@ -515,8 +517,8 @@ button { cursor: pointer; border: 0; background: none; }
 /* ------------------------------------------------------------------ 表情面板 */
 .picker {
   position: relative; inset: auto; z-index: auto; flex: none;
-  max-height: min(58vh, 520px); display: flex; flex-direction: column; gap: 8px;
-  padding: 12px; border-radius: 14px 14px 0 0; border-top: 1px solid var(--line-strong);
+  max-height: min(58vh, 520px); display: flex; flex-direction: column; gap: 6px;
+  padding: 9px 12px 10px; border-radius: 14px 14px 0 0; border-top: 1px solid var(--line-strong);
   background: var(--panel-solid); box-shadow: var(--shadow-pop);
   animation: slide-up .2s ease both;
 }
@@ -570,8 +572,8 @@ button { cursor: pointer; border: 0; background: none; }
 .sticker-cell .cell-btn.zoom { left: 4px; top: auto; bottom: 26px; opacity: .55; font-size: 11px; }
 .sticker-cell:hover .cell-btn.zoom { opacity: 1; }
 .picker-foot { font-size: 11.5px; color: var(--text-faint); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.picker-foot button { font-size: 11.5px; border: 1px solid var(--line); border-radius: 8px; padding: 3px 10px; color: var(--text-soft); }
-.picker-foot button:hover { color: var(--accent); border-color: var(--accent); }
+/* 平时这一档是空的（本地表情列表不再往这儿放话），空了就别占高度 */
+.picker-foot:empty { display: none; }
 .picker-loading { grid-column: 1/-1; text-align: center; color: var(--text-faint); padding: 30px 0; }
 
 /* ------------------------------------------------------------------ 弹窗 */

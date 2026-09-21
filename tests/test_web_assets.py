@@ -85,6 +85,20 @@ def test_press_feedback_is_for_everyone_and_shares_one_motion_language():
     assert ".tab-badge, .unread-count" in rm, "红点弹入也要能被晕动偏好关掉"
 
 
+def test_the_sticker_panel_spends_its_height_on_stickers():
+    """这个面板以前被自己撑肥：搜索框里写例句、底下一行「共 N 张 · 最多 3 张」再加一颗
+    重复的「管理表情库」按钮（设置里本来就有），图格只剩一行。现在底栏平时是空的，
+    空了就整档不占高度；说明挪到悬停和空结果里，「清空」跟着已选的图走。"""
+    assert 'placeholder="搜表情"' in HTML and "搜表情（标签" not in HTML
+    picker_fn = JS[JS.index("function renderPicker("):JS.index("async function renderWebPicker")]
+    # 只看代码行：注释里可以写历史（"以前这儿堆着管理按钮"），代码里不行
+    body = "\n".join(l for l in picker_fn.splitlines() if not l.strip().startswith("//"))
+    assert "管理表情库" not in body and "openStickerLibrary" not in body
+    assert "共 \" + list.length" not in JS, "张数不该常驻在面板底下"
+    assert ".picker-foot:empty { display: none; }" in CSS
+    assert 'class: "attach-clear"' in JS and ".attach-clear {" in CSS
+
+
 def test_web_assets_are_revalidated():
     """前端没有版本号，必须每次回源校验，否则改了样式刷新还是旧的。"""
     from fastapi.testclient import TestClient

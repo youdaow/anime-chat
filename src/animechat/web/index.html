@@ -91,7 +91,9 @@
     </footer>
     <div class="picker" id="picker" hidden>
       <div class="picker-head">
-        <input id="picker-q" type="search" placeholder="搜表情（标签：傲娇、加油、无语…）">
+        <!-- 搜索框里别写例句：那一长句把输入框撑满，图只剩一行。例句挪到悬停提示。 -->
+        <input id="picker-q" type="search" placeholder="搜表情"
+               title="按标签搜，例如：傲娇 / 加油 / 无语">
         <div class="picker-tabs" id="picker-tabs">
           <button data-tab="all" class="on">全部</button>
           <button data-tab="favorite">收藏</button>
