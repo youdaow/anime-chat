@@ -68,6 +68,23 @@ def test_the_front_page_toolbar_carries_theme_switch_and_a_bare_plus():
     assert "page-note" not in HTML, "页面里不摆操作说明"
 
 
+def test_press_feedback_is_for_everyone_and_shares_one_motion_language():
+    """以前按压反馈只写在 @media (hover: none) 里 —— 桌面上点什么都没回应。
+    现在凡是点得动的东西都有一次形变，而且时长/曲线只有 :root 那一处来源，
+    免得又长出第二套手感。"""
+    motion = CSS[CSS.index("交互反馈（不分输入设备）"):]
+    assert "button:active" in motion and "transform: scale(.975)" in motion
+    for token in ("--t-press:", "--t-state:", "--t-badge:", "--ease:"):
+        assert token in motion, token + " 该在这块里定义"
+    assert "var(--t-press)" in motion and "var(--ease)" in motion
+    touch = CSS[CSS.index("@media (hover: none)"):CSS.index("手机浏览器的地址栏")]
+    assert ":active" not in touch, "按压反馈不该只给触屏（那一档只管悬停显示不了的按钮）"
+    assert ".sticker-cell .cell-btn.zoom { opacity: 1; }" in touch
+    rm = CSS[CSS.index("@media (prefers-reduced-motion"):]
+    assert "transition: none" in rm and "transform: none" in rm
+    assert ".tab-badge, .unread-count" in rm, "红点弹入也要能被晕动偏好关掉"
+
+
 def test_web_assets_are_revalidated():
     """前端没有版本号，必须每次回源校验，否则改了样式刷新还是旧的。"""
     from fastapi.testclient import TestClient

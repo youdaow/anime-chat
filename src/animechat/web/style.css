@@ -801,8 +801,6 @@ details.more > .field:last-child { margin-bottom: 12px; }
    「指针粗不粗」——触屏笔记本的指针是细的、也有鼠标，不该被一起算进来。 */
 @media (hover: none) {
   .sticker-cell .cell-btn.zoom { opacity: 1; }
-  .row:active, .round:active, .send:active,
-  .pick-row:active, .sticker-cell:active { background: var(--hover); }
 }
 
 /* 手机浏览器的地址栏会伸缩：只在支持 dvh 的环境下用动态视口高，
@@ -829,12 +827,46 @@ details.more > .field:last-child { margin-bottom: 12px; }
 .head-info { overflow: hidden; }
 .head-info b, .head-info span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* ---------------------------------------------------- 交互反馈（不分输入设备）
+   时长和曲线只有一个来源，而且用的是页面推拉那条曲线（起步快、长尾减速）—— 按压、悬停、
+   红点冒出、页面切换看起来该是同一套动作，不是各写各的。
+   以前按压反馈只写在 @media (hover: none) 里：桌面上点任何按钮都没有回应。 */
+:root {
+  --t-press: 90ms;
+  --t-state: 140ms;
+  --t-badge: 220ms;
+  --ease: cubic-bezier(.32, .72, 0, 1);
+}
+
+button, .row, .pick-row, .sticker-cell, .cell-btn, .round, .tabbar button, .chip {
+  transition: background var(--t-state) linear, color var(--t-state) linear,
+              border-color var(--t-state) var(--ease), box-shadow var(--t-state) var(--ease),
+              transform var(--t-press) var(--ease);
+}
+button:active, .row:active, .pick-row:active, .sticker-cell:active, .cell-btn:active,
+.tabbar button:active { transform: scale(.975); }
+/* 绿底的发送键按下去不该变成一片灰，所以只有"面 / 空底"这类控件换底色 */
+.row:active, .pick-row:active, .sticker-cell:active, .cell-btn:active,
+.round:active { background: var(--hover); }
+/* 选项卡目标小，按得狠一点才觉得按到了 */
+.tabbar button:active { transform: scale(.94); }
+
+/* 红点从无弹到原位，别让它凭空出现 */
+@keyframes badge-in { from { opacity: 0; transform: scale(.4); } to { opacity: 1; transform: none; } }
+.tab-badge:not([hidden]), .unread-count:not([hidden]) {
+  animation: badge-in var(--t-badge) var(--ease) both;
+}
+
 /* 低端安卓机每条消息的 0.5s 弹入都掉帧；有晕动偏好的人看着也不舒服。 */
 @media (prefers-reduced-motion: reduce) {
   .msg.enter, .msg.enter .bubble, .msg.enter .avatar, .msg.enter .sticker-shot,
   .empty-art, .picker, .modal, .toast { animation: none !important; }
   .messages { scroll-behavior: auto; }
   .page { transition: none; }
+  button, .row, .pick-row, .sticker-cell, .cell-btn, .round, .tabbar button, .chip { transition: none; }
+  button:active, .row:active, .pick-row:active, .sticker-cell:active, .cell-btn:active,
+  .tabbar button:active { transform: none; }
+  .tab-badge, .unread-count { animation: none !important; }
 }
 
 
