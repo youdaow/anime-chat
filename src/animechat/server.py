@@ -488,7 +488,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
             "stickers": [_sticker_view(x) for x in library().all()],
             "emotions": [{"key": k, "label": emotion_label(k)} for k in EMOTION_KEYS],
             "conversations": [c.model_dump() for c in db.list_conversations(owner=owner)],
-            "prefs": {"last_character": db.get_pref("last_character", "")},
+            "prefs": {"last_character": db.get_pref(_last_char_pref(owner), "")},
             "stats": db.stats(owner=None if admin else owner),
             "visitor": {"name": v.get("name") or "", "admin": admin},
         }
@@ -851,9 +851,9 @@ def create_app(settings_override: Settings | None = None) -> Any:
                 raise HTTPException(404, "角色不存在：" + pid)
         db = store()
         # 访客建的会话打上他的 id；主人本人 / 没开认证时是空串（= 本人）
-        conv = db.create_conversation(ids[0], payload.title, participants=ids,
-                                      owner=owner_scope(request) or "")
-        db.set_pref("last_character", ids[0])
+        owner = owner_scope(request) or ""
+        conv = db.create_conversation(ids[0], payload.title, participants=ids, owner=owner)
+        db.set_pref(_last_char_pref(owner), ids[0])
         out: dict[str, Any] = {"conversation": conv.model_dump()}
         # 单聊只有它自己；群聊让每个成员各自打一次招呼，一进来就有群的样子（不花 token）
         for pid in ids:
@@ -1462,6 +1462,16 @@ def _sticker_view(st, auto: bool = False) -> dict:
     if auto:
         data["auto"] = True
     return data
+
+
+def _last_char_pref(owner: str | None) -> str:
+    """「上次聊的是谁」这个偏好按人分键。
+
+    全库共用一个 `last_character` 的时候有两股串味：陌生人一进来就被送到**你**最后聊的那个
+    角色跟前（等于泄露你的习惯），而他每开一个会话又把你这台设备的记忆改掉。owner 为空
+    （没开认证，或来的就是主人本人）仍然用老键名 —— 本机行为和已有数据都不变。
+    """
+    return "last_character" if not owner else "last_character:" + owner
 
 
 def _char_views(db, include_hidden: bool = False, owner: str | None = None) -> list[dict]:

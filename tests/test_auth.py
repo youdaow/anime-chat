@@ -474,6 +474,24 @@ def test_logout_puts_the_host_back_in_the_guest_seat():
     assert c.get("/api/bootstrap").json()["visitor"]["admin"] is True
 
 
+def test_last_character_is_per_visitor_and_the_host_owns_the_plain_key():
+    """「上次聊的是谁」以前全库一把键：陌生人一进来就被送到你最后聊的那个人跟前，
+    他每开一条会话又把你这台设备的记忆改掉。现在按身份分键，空 owner 沿用老键名。"""
+    a, b = guest_client(), guest_client()
+    ca = _first_char()
+    cb = _other_char(ca)
+    a.post("/api/conversations", json={"character_id": ca})
+    b.post("/api/conversations", json={"character_id": cb})
+    assert ca != cb, "测试要拿两个不同角色，不然这条断言是恒真的"
+    assert a.get("/api/bootstrap").json()["prefs"]["last_character"] == ca
+    assert b.get("/api/bootstrap").json()["prefs"]["last_character"] == cb
+    # 主人（没开认证 = 本机）读的是老键名，访客怎么聊都不该改到它
+    plain = TestClient(create_app(settings_override=Settings()))
+    plain.post("/api/conversations", json={"character_id": cb})
+    assert plain.get("/api/bootstrap").json()["prefs"]["last_character"] == cb
+    assert a.get("/api/bootstrap").json()["prefs"]["last_character"] == ca, "主人建会话不该改写访客的记忆"
+
+
 # ------------------------------------------------------------------ CLI
 def test_cli_invite_verbs_match_what_the_docs_say():
     """第一版把 name 做成裸位置参数（`invite 小明`），而 README / 帮助里写的是
@@ -524,6 +542,18 @@ def _first_char() -> str:
         client.post("/api/characters", json={"name": "测试角色"})
         chars = client.get("/api/characters").json()["characters"]
     return chars[0]["id"]
+
+
+def _other_char(exclude: str) -> str:
+    """再来一个**不同**的角色：按人隔离这类断言，拿同一个人测就是恒真的。"""
+    client = TestClient(create_app(settings_override=Settings()))
+    ids = [c["id"] for c in client.get("/api/characters").json()["characters"]]
+    if len(ids) < 2:
+        client.post("/api/characters", json={"name": "另一个测试角色"})
+        ids = [c["id"] for c in client.get("/api/characters").json()["characters"]]
+    rest = [i for i in ids if i != exclude]
+    assert rest, "角色库里至少要有两个角色才测得出「按人分开」"
+    return rest[0]
 
 
 def _last_conv_id(client) -> int:

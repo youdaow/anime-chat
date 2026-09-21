@@ -50,6 +50,13 @@ def test_env_prefix_matches_what_the_banner_prints():
     assert ENV_PREFIX == "ANIMECHAT_"
 
 
+def test_a_brand_new_device_is_not_shoved_into_a_chat():
+    """全新身份的第一屏该是空列表：boot 不许替他建会话（建了还会挂一条未读红点）。
+    只有他自己点「联系人」里的某个人，才真的开一条。"""
+    assert "create: false" in JS, "boot 装载上次会话时要明说：没有就别建"
+    assert "else if (options.create === false)" in JS, "selectCharacter 要认这个开关"
+
+
 def test_web_assets_are_revalidated():
     """前端没有版本号，必须每次回源校验，否则改了样式刷新还是旧的。"""
     from fastapi.testclient import TestClient

@@ -265,8 +265,9 @@ async function boot() {
     return;
   }
   // 只把上次那个人、最近那条会话装载好；停在用户上次看的那一页（initTabs 定的），
-  // 不该一开页面就把他从「我」页拽回聊天。
-  selectCharacter(target.id, { openLatest: true });
+  // 不该一开页面就把他从「我」页拽回聊天。全新的人（create:false）就留在空列表上，
+  // 让他自己去「联系人」点一个 —— 自动建会话等于替他决定，也污染了他那一侧的列表。
+  selectCharacter(target.id, { openLatest: true, create: false });
 }
 
 async function loadBootstrap() {
@@ -562,10 +563,13 @@ function selectCharacter(cid, opts) {
     return;
   }
   /* 点一个人 = 想跟这个人单独聊，进哪条由 rowConv 定（群聊不许抢走单聊）。
-     切到对话页由点进来的那一方负责——boot 恢复上次会话时不该顺手改页。 */
+     切到对话页由点进来的那一方负责——boot 恢复上次会话时不该顺手改页。
+     create:false 是给 boot 用的：一句都没聊过的全新身份不该被硬塞一条会话，
+     那既不是「全新的页面」，还会让他第一屏就挂着一条没读过的红点。 */
   const solo = rowConv(cid);
   if (solo) openConversation(solo.id);
-  else newConversation(cid);   // 一句都没聊过，先给他建一条
+  else if (options.create === false) renderChatList();
+  else newConversation(cid);
 }
 
 async function newConversation(cid) {
