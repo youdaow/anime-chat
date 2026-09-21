@@ -1218,9 +1218,16 @@ class Bridge:
         try:
             timeout = httpx.Timeout(max(30.0, float(s.llm_timeout) + 30), connect=10)
             async with httpx.AsyncClient(timeout=timeout) as c:
-                async with c.stream("POST", self.state.api_base + "/api/chat", json=payload) as r:
+                async with c.stream("POST", self.state.api_base + "/api/chat",
+                                    json=payload, headers=self._api_headers(s)) as r:
                     if r.status_code != 200:
                         body = (await r.aread()).decode("utf-8", "ignore")[:300]
+                        if r.status_code in (401, 403):
+                            # 报成「连不上」会把人引去查网络。这种是真的被门挡在外面。
+                            out.error = ("animechat 把这个请求挡在认证外面了（"
+                                        f"{r.status_code}）。本机 settings.json 里的 auth_bridge_token "
+                                        "要和网页服务那一份一致：两边都跑 `animechat invite --token` 对一下。")
+                            return out
                         out.error = self._unreachable_note(
                             f"返回 {r.status_code}" + (f"：{body}" if body else "（无内容）"))
                         return out
@@ -1232,6 +1239,14 @@ class Bridge:
         except httpx.HTTPError as exc:
             out.error = self._unreachable_note(str(exc)[:160])
         return out
+
+    def _api_headers(self, s: Any) -> dict:
+        """本机 API 的凭证。开了认证以后，**不能靠「来自 127.0.0.1 免检」**：
+        nginx 反代之后所有外网请求在应用眼里都是 127.0.0.1，那条规则等于门没关。
+        所以桥带一个令牌，值来自同一份 settings.json（`animechat invite --token` 生成）。
+        """
+        tok = (getattr(s, "auth_bridge_token", "") or "").strip()
+        return {"x-animechat-token": tok} if tok else {}
 
     def _unreachable_note(self, detail: str) -> str:
         """非 200 和连不上归到同一句话，并且一定带上「怎么修」。
@@ -1250,7 +1265,8 @@ class Bridge:
 
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10)) as c:
-                r = await c.request(method, self.state.api_base + path, json=payload)
+                r = await c.request(method, self.state.api_base + path, json=payload,
+                                    headers=self._api_headers(s))
                 if r.status_code >= 400:
                     return {"_error": f"{r.status_code} " + r.text[:200]}
                 return r.json()

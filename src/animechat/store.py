@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     summary TEXT NOT NULL DEFAULT '',
     summary_upto INTEGER NOT NULL DEFAULT 0,
     last_read_id INTEGER NOT NULL DEFAULT 0,
+    owner TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -46,6 +47,19 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, id);
 CREATE INDEX IF NOT EXISTS idx_conv_char ON conversations(character_id, updated_at);
 CREATE TABLE IF NOT EXISTS prefs (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- 访客（认证开着时才用）。库里没有明文口令：只存 salted scrypt 摘要，
+-- bucket 是口令摘要的一个短前缀，用来把「逐条跑 scrypt」变成查一行 ——
+-- 全表扫的话每个访客一次登录都要几十毫秒的哈希开销，既慢又是个计时侧信道。
+CREATE TABLE IF NOT EXISTS visitors (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    bucket TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    admin INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    last_seen REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_visitor_bucket ON visitors(bucket);
 """
 
 # 会话列表和会话详情共用的一段 SQL：未读 = 水位线之后的角色回复条数。只数 assistant，
@@ -71,6 +85,10 @@ def _migrate(conn) -> None:
         conn.execute(
             "UPDATE conversations SET last_read_id ="
             " COALESCE((SELECT MAX(id) FROM messages WHERE messages.conversation_id = conversations.id), 0)")
+    if 'owner' not in cols('conversations'):
+        # 认证没开时没人写 owner，空串就是「本机主人本人的会话」。老库整片留空即可：
+        # 那些历史本来就是他自己的聊天记录，不该被某个后注册的访客看见。
+        conn.execute("ALTER TABLE conversations ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
 
 
 class Store:
@@ -100,22 +118,23 @@ class Store:
 
     # ------------------------------------------------------------ 会话
     def create_conversation(self, character_id: str, title: str = "",
-                            participants: list[str] | None = None) -> Conversation:
+                            participants: list[str] | None = None, owner: str = "") -> Conversation:
         """participants 给两个以上就是群聊。character_id 恒为第一个成员，
-        这样只认 character_id 的老代码（列表过滤、侧栏归属）不会瞎。"""
+        这样只认 character_id 的老代码（列表过滤、侧栏归属）不会瞎。
+        owner 是认证开起来之后「这条会话是谁的」；空 = 本机主人本人。"""
         parts = [p for p in dict.fromkeys(participants or []) if p]
         if character_id not in parts:
             parts = [character_id] + parts
         now = time.time()
         with self._raw() as conn:
             cur = conn.execute(
-                "INSERT INTO conversations(character_id,title,pinned,participants,created_at,updated_at)"
-                " VALUES(?,?,0,?,?,?)",
-                (character_id, title[:60], json.dumps(parts, ensure_ascii=False), now, now),
+                "INSERT INTO conversations(character_id,title,pinned,participants,owner,created_at,updated_at)"
+                " VALUES(?,?,0,?,?,?,?)",
+                (character_id, title[:60], json.dumps(parts, ensure_ascii=False), owner, now, now),
             )
             cid = int(cur.lastrowid)
         return Conversation(id=cid, character_id=character_id, title=title, participants=parts,
-                            created_at=now, updated_at=now)
+                            owner=owner, created_at=now, updated_at=now)
 
     def get_conversation(self, cid: int) -> Conversation | None:
         with self._raw() as conn:
@@ -128,15 +147,38 @@ class Store:
             return None
         return _conv(row)
 
-    def list_conversations(self, character_id: str | None = None) -> list[Conversation]:
+    def conversation_owner(self, cid: int) -> str | None:
+        """这条会话归谁；会话不存在返回 None。门口做归属检查用的单条查询。"""
+        with self._raw() as conn:
+            row = conn.execute("SELECT owner FROM conversations WHERE id=?", (cid,)).fetchone()
+        return None if row is None else (row["owner"] or "")
+
+    def message_owner(self, mid: int) -> str | None:
+        """这条消息所在会话归谁；消息不存在返回 None。"""
+        with self._raw() as conn:
+            row = conn.execute(
+                "SELECT c.owner FROM messages m JOIN conversations c ON c.id=m.conversation_id"
+                " WHERE m.id=?", (mid,)).fetchone()
+        return None if row is None else (row["owner"] or "")
+
+    def list_conversations(self, character_id: str | None = None,
+                           owner: str | None = None) -> list[Conversation]:
+        """owner 给了就只列这个人的会话（认证开着、来的是访客时）；
+        不给 = 全列，那是本机主人本人和没开认证时的行为。"""
         sql = ("SELECT c.*, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id) AS n,"
                " (SELECT content FROM messages m WHERE m.conversation_id=c.id ORDER BY id DESC LIMIT 1) AS last,"
                + _UNREAD_SQL +
                " FROM conversations c ")
+        where: list[str] = []
         args: list[object] = []
         if character_id:
-            sql += "WHERE c.character_id=?"
+            where.append("c.character_id=?")
             args.append(character_id)
+        if owner is not None:
+            where.append("c.owner=?")
+            args.append(owner)
+        if where:
+            sql += "WHERE " + " AND ".join(where)
         sql += " ORDER BY c.pinned DESC, c.updated_at DESC LIMIT 300"
         with self._raw() as conn:
             rows = conn.execute(sql, args).fetchall()
@@ -183,6 +225,47 @@ class Store:
         with self._raw() as conn:
             conn.execute("UPDATE conversations SET summary=?, summary_upto=? WHERE id=?",
                          (summary.strip()[:2000], upto, cid))
+
+    # ------------------------------------------------------------ 访客（认证开着才用）
+    def add_visitor(self, name: str, code_hash: str, bucket: str, admin: bool = False) -> str:
+        vid = "v" + uuid.uuid4().hex[:8]
+        with self._raw() as conn:
+            conn.execute("INSERT INTO visitors(id,name,bucket,code_hash,admin,created_at,last_seen)"
+                         " VALUES(?,?,?,?,?,?,0)",
+                         (vid, (name or "").strip()[:24], bucket, code_hash, 1 if admin else 0, time.time()))
+        return vid
+
+    def visitor_candidates(self, bucket: str) -> list[dict]:
+        with self._raw() as conn:
+            rows = conn.execute("SELECT id,name,code_hash,admin FROM visitors WHERE bucket=?",
+                                (bucket,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_visitor(self, vid: str) -> dict | None:
+        with self._raw() as conn:
+            row = conn.execute("SELECT id,name,admin,last_seen FROM visitors WHERE id=?", (vid,)).fetchone()
+        return dict(row) if row else None
+
+    def list_visitors(self) -> list[dict]:
+        with self._raw() as conn:
+            rows = conn.execute("SELECT id,name,admin,created_at,last_seen FROM visitors"
+                                " ORDER BY admin DESC, created_at ASC").fetchall()
+        return [dict(r) for r in rows]
+
+    def count_visitors(self) -> int:
+        with self._raw() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM visitors").fetchone()[0])
+
+    def touch_visitor(self, vid: str) -> None:
+        with self._raw() as conn:
+            conn.execute("UPDATE visitors SET last_seen=? WHERE id=?", (time.time(), vid))
+
+    def revoke_visitor(self, vid: str) -> bool:
+        """删行即可 —— cookie 里只有访客 id，行没了签名再对也换不到任何权限。"""
+        with self._raw() as conn:
+            cur = conn.execute("DELETE FROM visitors WHERE id=?", (vid,))
+            conn.execute("UPDATE conversations SET owner='' WHERE owner=?", (vid,))
+            return cur.rowcount > 0
 
     # ------------------------------------------------------------ 消息
     def add_message(self, cid: int, role: str, content: str, stickers: list[str] | None = None,
@@ -483,6 +566,7 @@ def _conv(row: sqlite3.Row) -> Conversation:
         last_read_id=int(row["last_read_id"] or 0) if "last_read_id" in row.keys() else 0,
         # 没带 unread 子查询的调用方（极少）当作 0，别让 KeyError 冒出来
         unread_count=int(row["unread"] or 0) if "unread" in row.keys() else 0,
+        owner=(row["owner"] or "") if "owner" in row.keys() else "",
     )
 
 

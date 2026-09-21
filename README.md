@@ -302,6 +302,36 @@ anime-chat/
 - 线上实例由名为 `animechat` 的 systemd 服务管理；部署目录不是 Git checkout，代码更新时通过 SSH 同步所需文件并重启该服务完成上线。
 - 线上数据存放在独立的部署数据目录；进行维护或迁移前应先备份。
 
+## 交给别人用（认证）
+
+默认**不开**：本机自己用不该被登录页挡一道。要给朋友访问就先把它打开 —— 这套界面上
+没有任何账号体系，开着就等于谁都能读你的聊天记录、删你的会话、改设置里的密钥。
+
+```bash
+python -m animechat.cli invite add 小明        # 打印一次性访问口令（16 位，库里只存 scrypt 摘要）
+python -m animechat.cli invite --list          # 看看都有谁、谁上次什么时候登录
+python -m animechat.cli invite --revoke v1a2b3c4d   # 撤销：他手上的 cookie 当场失效
+python -m animechat.cli invite --token         # 飞书桥要用的 x-animechat-token
+```
+
+打开方式是给进程一个环境变量（不必改 settings.json，也不用碰界面）：
+
+```ini
+# systemctl edit animechat
+[Service]
+Environment=ANIMECHAT_AUTH_ENABLED=1
+```
+
+开着以后的规矩：**每个人只看得到自己的会话**，角色库和表情库共享（能读能聊），但加角色、
+改表情、改设置只有主人能做。`--admin` 不是"权限大一点的访客"，那是主人本人的另一个登录
+（他看得见全部会话），别随手给。飞书桥带 `x-animechat-token` 过门 —— **不能靠"来自
+127.0.0.1 免检"**，走 nginx 反代以后所有外网请求在应用眼里都是 127.0.0.1，那条规则等于门没关。
+
+一条要说清的残余风险：口令和 cookie 现在跑在**明文 HTTP** 上（那台机器没有域名，签不了
+证书）。所以：口令是随机长串、猜不出来，但同一路径上的人仍可能嗅到；别让它等于你别的
+密码；哪天有域名了就上 HTTPS，cookie 加上 `secure` 只需改一行。cookie 活 30 天，所以手机
+上不用天天敲口令。
+
 ## 常见问题
 
 **黄条一直说 Mock 模式？** 三种来路：接入方式选了「内置 Mock」、`llm_api_key` 空着、或模型名写着 `mock`。想用真模型就在「我」页 → 模型 的「接入方式」里挑一家平台（地址已预置，只填 Key + 模型名），或选「自定义 / 中转站」自己填 Base URL，保存后黄条自己消失。
@@ -312,7 +342,7 @@ anime-chat/
 **联网搜索没结果？** 默认源是 Bing（免 Key）；它也可能改版，这时会如实报错而不是给你空列表。设置里换个源（Bing / DuckDuckGo / 自动）。搜到的图一律下载到本地才入库。
 **联网加进来的表情，角色一次都没发过？** 八成是这张没「定义」：老版本会把远程站的哈希文件名当名字存进库（`9lddQjsw k5ltZcT3cSs.jpg` 这种），情绪也判不出来，等于加了个哑巴。现在扫库时会自动补上（打开界面就已经是补过的），也可以自己修：表情包库 →「管理表情」→ 改标签 / 改情绪，手动改过的以后不会再被自动改。判据是名字和标签里的词，所以标签写成「傲娇 / 杂鱼 / 嘴硬」这种**情绪词**最有用；只写「好看」「收藏」没人挑得中它。
 **AI 生成的角色还是那张 Q 版圆脸，没拿到立绘？** 找头像和找表情是两套排序（站徽、小缩略图往后甩，而且不去动图库问）。退回 Q 版一般是这几种：当时没网、原站防盗链下不动、或搜到的图短边不到 140px（裁出来糊成一片，不如不用）。想自己挑：点角色头像进编辑器 →「联网找头像」，候选里点一张 —— 格子上写「预览被挡」也不要紧，那只是浏览器外链缩略图被挡，下载是服务端做的，点了照样能用。介意用别人的图就在设置里关掉「AI 生成角色时联网找头像」，那样一律只画 Q 版。挑中了却被切掉半张脸：候选点下去之后那个取景框就是给你挪位置的，当时没调也不要紧，进编辑器点「微调位置」随时重来（本机重裁，不会再下一次图）。
-**换了端口打不开？** 只改过端口没改绑定：这个界面没有鉴权，请保持 `127.0.0.1`，别暴露到公网。
+**换了端口打不开？** 只改过端口没改绑定。这个界面本来没有鉴权，所以要么保持 `127.0.0.1` 别暴露到公网，要么按「交给别人用（认证）」那一节把 `auth_enabled` 打开 —— 两者都不做就是把自己的聊天记录和密钥放在公网门口。
 **联系人页整个不见了、点哪都没反应？** 布局被撑破：某层缺 `min-height:0`，会话一长聊天页就比视口高，`body{overflow:hidden}` 被输入框的 focus() 滚到底，整块界面滚出屏幕而且**滚不回来**（overflow:hidden 时滚轮不起作用）。已修，并加了防回归测试 `test_app_uses_inner_scroll_not_page_scroll`。自检：F12 执行 `document.querySelector('.char-list').getBoundingClientRect().top`，负数就是又被撑破了。
 **切页后三页同时显示 / 一页都看不见？** `.main`、`.page-head` 这些规则自带 `display`，会把 `[hidden]` 的默认 `display:none` 盖掉——所以 `.page[hidden] { display: none !important; }` 这一条不能省。反过来，如果三页都不显示，多半是 `#app` 的 `data-tab` 和页面的 `hidden` 不同步（都走 `switchTab()`，别在别处直接改 `hidden`）。防回归：`test_three_pages_share_one_tabbar`。
 **红点消不掉？** 先弄清它算的是什么：红点只数**「点这一行会进去的那条单聊」**，TA 名下的飞书群镜像会话不算（网页里也进不去那条，以前把群里的未读一起加进来，就变成永远清不掉的死点）。还亮着就是那条单聊里确实有没看的回复 —— 点进去才算读到，而且**标签页得在前台**：在后台打开不清水位，切回前台会补一次。防回归：`test_row_badge_only_counts_the_conversation_a_tap_opens`。
@@ -322,7 +352,7 @@ anime-chat/
 ## 开发
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q          # 412 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
+.venv\Scripts\python.exe -m pytest -q          # 428 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
 .venv\Scripts\python.exe -m animechat.cli doctor
 $env:ANIMECHAT_DEBUG=1; .venv\Scripts\python.exe -m animechat.cli run --reload
 ```

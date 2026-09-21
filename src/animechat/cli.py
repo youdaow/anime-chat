@@ -1,10 +1,11 @@
-"""命令行入口：run / doctor / build-assets / add-sticker / import-card / export-card / feishu。"""
+"""命令行入口：run / doctor / build-assets / add-sticker / import-card / export-card / feishu / invite。"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from . import config, providers
@@ -279,6 +280,69 @@ def cmd_export_card(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_invite(args) -> int:
+    """发 / 收 / 列访问口令。
+
+    口令只在这一刻打印一次，库里存的是 salted scrypt 摘要 —— 所以忘了就重新发一个，
+    去翻数据库也翻不出来。
+
+    顺手把两个密钥补齐：auth_session_secret 空着的时候登录一定失败（auth.unsign 拒绝
+    没有密钥的签名，这是故意的 —— 宁可登录不上，也不留一个谁都能伪造 cookie 的门）。
+    """
+    from . import auth
+    from .config import load_settings, save_settings
+    from .store import store
+
+    s = load_settings()
+    db = store()
+
+    if args.token:
+        if not s.auth_bridge_token:
+            save_settings({"auth_bridge_token": auth.new_secret()})
+            s = load_settings()
+        print("飞书桥令牌（存进 settings.json 的 auth_bridge_token，桥自己会带上）：")
+        print("  " + s.auth_bridge_token)
+        return 0
+    if args.revoke:
+        ok = db.revoke_visitor(args.revoke)
+        print(("已撤销 " + args.revoke + "（他手上的 cookie 当场失效）") if ok
+              else ("没有这个访客：" + args.revoke))
+        return 0 if ok else 1
+    if args.list:
+        rows = db.list_visitors()
+        if not rows:
+            print("还没有访客。发一个：python -m animechat.cli invite add 名字")
+            return 0
+        for r in rows:
+            seen = (time.strftime("%Y-%m-%d %H:%M", time.localtime(r["last_seen"]))
+                    if r["last_seen"] else "从没登录过")
+            print("  %-10s %-12s %-4s 上次登录 %s"
+                  % (r["id"], r["name"] or "（没名字）", "主人" if r["admin"] else "访客", seen))
+        return 0
+
+    if not args.name:
+        print("要个名字，方便以后认出该撤销谁：python -m animechat.cli invite add 小明")
+        return 2
+    patch = {}
+    if not s.auth_session_secret:
+        patch["auth_session_secret"] = auth.new_secret()
+    if not s.auth_bridge_token:
+        patch["auth_bridge_token"] = auth.new_secret()
+    if patch:
+        save_settings(patch)
+
+    code = auth.new_code()
+    vid = db.add_visitor(args.name, auth.hash_code(code), auth.bucket_of(code), admin=args.admin)
+    print("访客 id : " + vid)
+    print("访问口令: " + code + "   （只显示这一次，忘了就重发一个）")
+    if not s.auth_enabled:
+        print("")
+        print("注意：认证现在还是关着的，任何人都能不输口令直接进来。服务器上打开它：")
+        print("  systemctl edit animechat  →  [Service] 里加一行 Environment=ANIMECHAT_AUTH_ENABLED=1")
+        print("  然后 systemctl daemon-reload && systemctl restart animechat")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _fix_console()
     parser = argparse.ArgumentParser(prog="animechat", description="二次元角色聊天 AI")
@@ -324,9 +388,18 @@ def main(argv: list[str] | None = None) -> int:
                       help="清掉某个角色（或全部）的飞书绑定")
     p_fs.set_defaults(fn=cmd_feishu)
 
+    p_inv = sub.add_parser("invite", help="发 / 收访问口令（把这套界面交给别人用之前先跑它）")
+    p_inv.add_argument("name", nargs="?", default="", help="给谁用的，例如「小明」")
+    p_inv.add_argument("--admin", action="store_true",
+                       help="这个人也能改角色/表情/设置（默认只能聊天、只看自己的会话）")
+    p_inv.add_argument("--list", action="store_true", help="列出现有访客")
+    p_inv.add_argument("--revoke", default="", metavar="访客id", help="撤销一个访客，他的 cookie 当场失效")
+    p_inv.add_argument("--token", action="store_true", help="打印飞书桥用的 x-animechat-token")
+    p_inv.set_defaults(fn=cmd_invite)
+
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] not in {"run", "doctor", "build-assets", "add-sticker", "unhide-stickers",
-                                   "import-card", "export-card", "feishu"}:
+                                   "import-card", "export-card", "feishu", "invite"}:
         argv = ["run"] + argv
     args = parser.parse_args(argv)
     return int(args.fn(args) or 0)

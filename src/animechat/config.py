@@ -52,9 +52,15 @@ ENV_KEYS = {
     "feishu_proactive",
     "feishu_idle_min",
     "feishu_daily_max",
+    "auth_enabled",
+    "auth_session_secret",
+    "auth_bridge_token",
 }
 
-SECRET_FIELDS = ("llm_api_key", "tenor_api_key", "giphy_api_key", "github_token", "feishu_app_secret")
+# 这几个字段的值一律不回显给前端（掩码）。auth_* 也在里面：会话签名密钥泄露等于
+# 任何人都能给自己签一张管理员 cookie，桥接令牌泄露等于任何人都能借道发飞书。
+SECRET_FIELDS = ("llm_api_key", "tenor_api_key", "giphy_api_key", "github_token",
+                 "feishu_app_secret", "auth_session_secret", "auth_bridge_token")
 
 
 def _default_data_dir() -> Path:
@@ -170,6 +176,17 @@ class Settings(BaseModel):
     feishu_idle_min: int = 120
     # 每个会话每天最多主动发几条（防刷屏 + 省额度）。跨天自动清零。
     feishu_daily_max: int = 10
+
+    # 认证。默认关：本机自己用不该被登录页挡一道，整套既有测试也不受影响。
+    # 打开的唯一理由是把这套界面交给别人访问 —— 它本来没有任何鉴权，却能读走全部
+    # 聊天记录、删会话、改设置里的密钥。实现见 auth.py（口令 scrypt + 签名 cookie）。
+    auth_enabled: bool = False
+    # cookie 的签名密钥。空 = 没配好，auth.py 一律拒绝（宁可登录不上，也不悄悄
+    # 变成一个谁都能伪造 cookie 的门）。由 `animechat invite` 生成并写回这里。
+    auth_session_secret: str = ""
+    # 飞书桥回调本机 API 时带的令牌。**不能靠「来自 127.0.0.1 免检」**：nginx 反代
+    # 之后所有外网请求在应用眼里都是 127.0.0.1，那样门等于没关。
+    auth_bridge_token: str = ""
 
     @field_validator("llm_provider")
     @classmethod

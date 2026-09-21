@@ -146,6 +146,8 @@ class Conversation(BaseModel):
     # 给自己点个红点。两个值都由 store 查询算出来，前端只负责画。
     last_read_id: int = 0
     unread_count: int = 0
+    # 认证开起来之后这条会话归谁（访客 id）。空 = 本机主人本人的，包括所有历史行。
+    owner: str = ""
 
     @computed_field  # 跟着 model_dump 走，前端直接拿得到
     @property

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>访问口令 · AnimeChat</title>
+<style>
+  /* 只有这一页是独立文档（不能依赖 app.js：它整个在门后面），所以样式就地写。
+     刻意不加装饰：一格输入框、一个按钮、一句原因。 */
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         font: 15px/1.6 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #f6f5f3; color: #24211d; }
+  @media (prefers-color-scheme: dark) { body { background: #16171a; color: #e8e6e2; } }
+  main { width: min(340px, calc(100vw - 40px)); }
+  h1 { font-size: 17px; margin: 0 0 4px; font-weight: 600; }
+  p { margin: 0 0 18px; font-size: 13px; opacity: .65; }
+  input { width: 100%; box-sizing: border-box; padding: 11px 12px; font-size: 16px;
+          letter-spacing: .06em; border: 1px solid rgba(128,128,128,.4); border-radius: 10px;
+          background: transparent; color: inherit; }
+  input:focus { outline: 2px solid rgba(128,128,128,.35); outline-offset: 1px; }
+  button { width: 100%; margin-top: 10px; padding: 11px; font-size: 15px; font-weight: 600;
+           border: 0; border-radius: 10px; background: #24211d; color: #fff; cursor: pointer; }
+  @media (prefers-color-scheme: dark) { button { background: #e8e6e2; color: #16171a; } }
+  button[disabled] { opacity: .5; cursor: default; }
+  /* 错误单独占一行且固定高度：不然报错时整块往下跳，手机上像界面坏了。 */
+  [role=status] { min-height: 20px; margin-top: 10px; font-size: 13px; color: #a33; }
+  @media (prefers-color-scheme: dark) { [role=status] { color: #e88; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>这台 AnimeChat 需要口令</h1>
+  <p>口令由主人发放，一次一个。换设备或清过浏览器缓存后要再输一次。</p>
+  <form id="f" autocomplete="off">
+    <input id="code" type="password" inputmode="latin" autocomplete="one-time-code"
+           placeholder="访问口令" spellcheck="false" autofocus aria-label="访问口令">
+    <button id="go" type="submit">进入</button>
+    <div id="msg" role="status" aria-live="polite"></div>
+  </form>
+</main>
+<script>
+  var f = document.getElementById("f"), code = document.getElementById("code"),
+      go = document.getElementById("go"), msg = document.getElementById("msg");
+  f.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var v = code.value.trim();
+    if (!v) { msg.textContent = "先把口令填上。"; return; }
+    go.disabled = true; msg.textContent = "看一下…";
+    fetch("/api/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: v }), credentials: "same-origin"
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, status: r.status, d: d }; });
+    }).then(function (res) {
+      if (res.ok) { location.replace("/"); return; }        // 换到正式界面，别停在登录页
+      go.disabled = false;
+      msg.textContent = (res.d && res.d.detail) || ("进不去（HTTP " + res.status + "）");
+      code.select();
+    }).catch(function () {
+      go.disabled = false; msg.textContent = "连不上服务端，检查一下网络再试。";
+    });
+  });
+</script>
+</body>
+</html>

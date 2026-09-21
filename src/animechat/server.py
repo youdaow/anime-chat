@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import math
 import re
@@ -11,11 +12,11 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import Body, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from . import cardio, feishu, ghpack, llm, media, me, mock as mock_mod, persona, prompt, providers
+from . import auth, cardio, feishu, ghpack, llm, media, me, mock as mock_mod, persona, prompt, providers
 from . import stickerdef, websearch
 from .characters import book
 from .config import DATA_DIR, PKG_DIR, Settings, ensure_dirs, load_settings, save_settings, settings_for_client
@@ -252,6 +253,132 @@ def create_app(settings_override: Settings | None = None) -> Any:
     def settings() -> Settings:
         return settings_override or load_settings()
 
+    # --------------------------------------------------------------- 认证门
+    # 默认关着（Settings.auth_enabled=False）：本机自己用不该被登录页挡一道，整套既有
+    # 测试也照旧。打开它的唯一理由是「这台机器要给别人访问」—— 这个界面没有任何鉴权，
+    # 却能读走全部聊天记录、删会话、改设置里的密钥。
+    limiter = auth.LoginLimiter()
+    # cookie 活 30 天。手机上的浏览器不该天天要人敲一次 16 位口令；要提前收回权限就
+    # `invite revoke`，那是在线的（访客行一删，签名再对也换不到权限）。
+    SESSION_TTL = 30 * 86400
+
+    # 登录后才给看的东西里，这几条必须放行，否则登录页自己都打不开。
+    # /api/health 也放过：systemd / 探针只关心进程活着没有，它返回的是版本和表情库计数。
+    PUBLIC_PATHS = {"/login", "/web/login.html", "/api/login", "/api/logout",
+                    "/favicon.ico", "/api/health"}
+    # 访客能做的写操作只有「聊天」这一件。加角色、改表情、改设置都是主人的活。
+    VISITOR_WRITE = (re.compile(r"^/api/chat$"),
+                     re.compile(r"^/api/conversations$"),
+                     re.compile(r"^/api/conversations/\d+$"),          # 删自己的会话
+                     re.compile(r"^/api/conversations/\d+/(read|compact)$"),
+                     re.compile(r"^/api/messages/\d+$"),               # 改/删自己会话里的消息
+                     re.compile(r"^/api/messages/\d+/use-sticker$"))
+    # 路径里带会话/消息 id 的，归属统一在这里查一次。写在各个端点里迟早会漏一个新路由，
+    # 所以放在门口。
+    PATH_CONV_ID = re.compile(r"^/api/conversations/(\d+)")
+    PATH_MSG_ID = re.compile(r"^/api/messages/(\d+)")
+
+    def client_key(request: Request) -> str:
+        """限速用的来源地址。只有连接**真的**来自本机（nginx 同机反代）才认
+        X-Forwarded-For，否则谁都能靠伪造这个头把自己洗成任意 IP。"""
+        peer = (request.client.host if request.client else "") or ""
+        fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        if fwd and peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"):
+            return fwd
+        return peer or "unknown"
+
+    def visitor_of(request: Request) -> dict | None:
+        """cookie 里的签名换回访客；桥接带 x-animechat-token 也认（它调的是本机 API）。"""
+        s = settings()
+        tok = request.headers.get(auth.BRIDGE_HEADER, "")
+        if tok and s.auth_bridge_token and hmac.compare_digest(tok, s.auth_bridge_token):
+            # 桥带令牌进来 = 以主人本人的身份操作：飞书那些会话本来就是他的
+            return {"id": "", "name": "飞书桥接", "admin": True}
+        got = auth.unsign(s.auth_session_secret, request.cookies.get(auth.COOKIE_NAME, ""))
+        if not got:
+            return None
+        row = store().get_visitor(got[0])       # 被撤销的访客这里就是 None，cookie 当场作废
+        if row is None:
+            return None
+        return {"id": row["id"], "name": row["name"], "admin": bool(row["admin"])}
+
+    def owner_scope(request: Request) -> str | None:
+        """None = 不过滤（没开认证，或者来的就是主人/桥）。"""
+        if not settings().auth_enabled:
+            return None
+        v = getattr(request.state, "visitor", None)
+        if not v or v["admin"]:
+            return None
+        return v["id"]
+
+    @app.middleware("http")
+    async def _auth_gate(request: Request, call_next):
+        s = settings()
+        if not s.auth_enabled:
+            return await call_next(request)
+        path = request.url.path
+        if path == "/api/login":
+            return await call_next(request)        # 登录自己管限速
+        if request.method in ("GET", "HEAD", "OPTIONS") and path in PUBLIC_PATHS:
+            return await call_next(request)
+        v = visitor_of(request)
+        if v is None:
+            if path.startswith("/api/") or path.startswith("/media/"):
+                return JSONResponse(status_code=401, content={"detail": "请先输入访问口令"})
+            return RedirectResponse(url="/login", status_code=303)
+        request.state.visitor = v
+        if not v["admin"]:
+            m = PATH_CONV_ID.match(path)
+            mm = PATH_MSG_ID.match(path)
+            owner = (store().conversation_owner(int(m.group(1))) if m
+                     else store().message_owner(int(mm.group(1))) if mm else None)
+            if owner is not None and owner != v["id"]:
+                # 404 而不是 403：别人的会话存不存在，不该让访客知道
+                return JSONResponse(status_code=404, content={"detail": "会话不存在"})
+            if request.method not in ("GET", "HEAD", "OPTIONS") and \
+                    not any(rx.match(path) for rx in VISITOR_WRITE):
+                return JSONResponse(status_code=403, content={"detail": "只有主人能改这里"})
+        return await call_next(request)
+
+    @app.get("/login", include_in_schema=False)
+    def login_page() -> Response:
+        target = WEB_DIR / "login.html"
+        if not target.is_file():
+            return JSONResponse(status_code=500, content={"detail": "缺少登录页：" + str(target)})
+        return FileResponse(str(target), headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/login", include_in_schema=False)
+    async def login_submit(request: Request, payload: dict = Body(...)) -> Response:
+        s = settings()
+        key = client_key(request)
+        wait = limiter.wait_seconds(key)
+        if wait:
+            return JSONResponse(status_code=429, headers={"Retry-After": str(int(wait) + 1)},
+                                content={"detail": "试太多次了，%.0f 分钟后再来" % (wait / 60.0)})
+        if not s.auth_session_secret:
+            # 开了认证却没生成签名密钥 = 配置没做完。宁可明说，也不要退化成谁都能伪造 cookie。
+            return JSONResponse(status_code=500, content={"detail": "服务端还没配好：跑 `animechat invite add 主人` 生成密钥和口令"})
+        code = str(payload.get("code") or "")
+        row = next((c for c in store().visitor_candidates(auth.bucket_of(code))
+                    if auth.verify_code(code, c["code_hash"])), None)
+        if row is None:
+            limiter.fail(key)
+            return JSONResponse(status_code=401, content={"detail": "口令不对"})
+        limiter.clear(key)
+        store().touch_visitor(row["id"])
+        resp = JSONResponse({"ok": True, "visitor": {"name": row["name"], "admin": bool(row["admin"])}})
+        # 没有 HTTPS 就不能加 secure=True（那样浏览器在 http 上根本不肯存 cookie，
+        # 谁也别想登录）。这条限制在 README「交给别人用」里写明了。
+        resp.set_cookie(auth.COOKIE_NAME, auth.sign(s.auth_session_secret, row["id"], time.time() + SESSION_TTL),
+                        max_age=SESSION_TTL, httponly=True, samesite="lax", path="/")
+        return resp
+
+    @app.post("/api/logout", include_in_schema=False)
+    def logout() -> Response:
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie(auth.COOKIE_NAME, path="/")
+        return resp
+
     # ----------------------------------------------------------- 页面与素材
     @app.get("/", include_in_schema=False)
     def index() -> Response:
@@ -279,16 +406,17 @@ def create_app(settings_override: Settings | None = None) -> Any:
                 "web_dir": str(WEB_DIR), "stickers": library().stats()}
 
     @app.get("/api/bootstrap")
-    def bootstrap() -> dict:
+    def bootstrap(request: Request) -> dict:
         s = settings()
         db = store()
+        owner = owner_scope(request)
         return {
             "version": app.version,
             "settings": _settings_view(s),
-            "characters": _char_views(db),
+            "characters": _char_views(db, owner=owner),
             "stickers": [_sticker_view(x) for x in library().all()],
             "emotions": [{"key": k, "label": emotion_label(k)} for k in EMOTION_KEYS],
-            "conversations": [c.model_dump() for c in db.list_conversations()],
+            "conversations": [c.model_dump() for c in db.list_conversations(owner=owner)],
             "prefs": {"last_character": db.get_pref("last_character", "")},
             "stats": db.stats(),
             "sticker_dir": str(DATA_DIR / "stickers"),
@@ -296,16 +424,18 @@ def create_app(settings_override: Settings | None = None) -> Any:
 
     # ----------------------------------------------------------- 角色
     @app.get("/api/characters")
-    def characters(include_hidden: bool = False) -> dict:
-        return {"characters": _char_views(store(), include_hidden=include_hidden)}
+    def characters(request: Request, include_hidden: bool = False) -> dict:
+        return {"characters": _char_views(store(), include_hidden=include_hidden,
+                                          owner=owner_scope(request))}
 
     @app.get("/api/characters/{cid}")
-    def character_one(cid: str) -> dict:
+    def character_one(request: Request, cid: str) -> dict:
         char = book().get(cid, include_hidden=True)
         if char is None:
             raise HTTPException(404, "角色不存在")
         return {"character": char.model_dump(),
-                "conversations": [c.model_dump() for c in store().list_conversations(cid)]}
+                "conversations": [c.model_dump() for c in
+                                  store().list_conversations(cid, owner=owner_scope(request))]}
 
     @app.post("/api/characters")
     def character_create(payload: dict = Body(...)) -> dict:
@@ -634,7 +764,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
 
     # ----------------------------------------------------------- 会话
     @app.post("/api/conversations")
-    def conversation_create(payload: ConvReq) -> dict:
+    def conversation_create(request: Request, payload: ConvReq) -> dict:
         s = settings()
         # 去重保序；character_id 恒为第一个成员，群聊就是它后面再排人
         ids = [p for p in dict.fromkeys(payload.participants or []) if p]
@@ -646,7 +776,9 @@ def create_app(settings_override: Settings | None = None) -> Any:
             if book().get(pid, include_hidden=True) is None:
                 raise HTTPException(404, "角色不存在：" + pid)
         db = store()
-        conv = db.create_conversation(ids[0], payload.title, participants=ids)
+        # 访客建的会话打上他的 id；主人本人 / 没开认证时是空串（= 本人）
+        conv = db.create_conversation(ids[0], payload.title, participants=ids,
+                                      owner=owner_scope(request) or "")
         db.set_pref("last_character", ids[0])
         out: dict[str, Any] = {"conversation": conv.model_dump()}
         # 单聊只有它自己；群聊让每个成员各自打一次招呼，一进来就有群的样子（不花 token）
@@ -666,8 +798,9 @@ def create_app(settings_override: Settings | None = None) -> Any:
         return out
 
     @app.get("/api/conversations")
-    def conversation_list(character_id: str | None = None) -> dict:
-        return {"conversations": [c.model_dump() for c in store().list_conversations(character_id)]}
+    def conversation_list(request: Request, character_id: str | None = None) -> dict:
+        return {"conversations": [c.model_dump() for c in
+                                  store().list_conversations(character_id, owner=owner_scope(request))]}
 
     @app.get("/api/conversations/{cid}")
     def conversation_get(cid: int, limit: int = 400) -> dict:
@@ -804,12 +937,17 @@ def create_app(settings_override: Settings | None = None) -> Any:
 
     # ----------------------------------------------------------- 聊天（核心）
     @app.post("/api/chat")
-    async def chat(payload: ChatReq) -> StreamingResponse:
+    async def chat(request: Request, payload: ChatReq) -> StreamingResponse:
         s = settings()
         db = store()
         lib = library()
         conv = db.get_conversation(payload.conversation_id)
         if conv is None:
+            raise HTTPException(404, "会话不存在")
+        # 会话 id 在请求体里，门口那条「按路径查归属」的规则看不到它，所以这里补一次。
+        # 不补就等于访客只要猜到 id 就能往别人的对话里插话。
+        owner = owner_scope(request)
+        if owner is not None and conv.owner != owner:
             raise HTTPException(404, "会话不存在")
         participants = [p for p in (conv.participants or []) if p] or [conv.character_id]
         group = len(participants) > 1
@@ -1251,13 +1389,15 @@ def _sticker_view(st, auto: bool = False) -> dict:
     return data
 
 
-def _char_views(db, include_hidden: bool = False) -> list[dict]:
+def _char_views(db, include_hidden: bool = False, owner: str | None = None) -> list[dict]:
+    """owner 给了就只按这个人的会话算预览/红点 —— 认证开着时，访客不该从
+    角色列表里瞄到主人「上次聊了什么」。None = 全算（没开认证，或来的就是主人）。"""
     counts: dict[str, int] = {}
     unread: dict[str, int] = {}
     # pid -> (会话更新时间, 最后一条消息预览)。列表副标题显示「上次聊了什么」，
     # 不再显示角色介绍。取 updated_at 最大的那条会话，不受置顶排序影响。
     last_seen: dict[str, tuple[float, str]] = {}
-    for conv in db.list_conversations():
+    for conv in db.list_conversations(owner=owner):
         counts[conv.character_id] = counts.get(conv.character_id, 0) + 1
         # 未读要摊到每个成员头上：群聊里祥子回了话，从睦的列表项也该看得见红点，
         # 不然窄屏（只有角色列表、会话列表收成头像条）就永远提示不到。
