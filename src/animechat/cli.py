@@ -369,9 +369,11 @@ def cmd_invite(args) -> int:
     print("访问口令: " + code + "   （只显示这一次，忘了就重发一个）")
     if not s.auth_enabled:
         print("")
-        print("注意：认证现在还是关着的，任何人都能不输口令直接进来。服务器上打开它：")
-        print("  systemctl edit animechat  →  [Service] 里加一行 Environment=ANIMECHAT_AUTH_ENABLED=1")
-        print("  然后 systemctl daemon-reload && systemctl restart animechat")
+        print("注意：这个命令行看到的认证是关的。")
+        print("  服务器上多半是 systemd 用 Environment=ANIMECHAT_AUTH_ENABLED=1 打开的，")
+        print("  而这个变量只在服务进程里，手动跑 cli 读不到 —— 想确认就试一次：")
+        print("    curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:8899/api/conversations")
+        print("  返回 401 就是已经开了。真没开的话：systemctl edit animechat 加那行，再 restart。")
     return 0
 
 
