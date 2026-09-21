@@ -99,6 +99,46 @@ def test_code_login_accepts_a_non_ascii_attempt():
     assert login(client, {"不是": "字符串"}).status_code == 401
 
 
+def test_https_detection_trusts_forwarded_proto_only_from_localhost():
+    """TLS 在 nginx 那儿终结，应用只能靠 X-Forwarded-Proto 知道 —— 但这个头谁都能伪造。
+    判错方向有两种坏法：把明文当 https（Secure 一加，http 下没人能登录）；
+    把 https 当明文（口令和 cookie 在 TLS 里裸奔，还以为没事）。"""
+    from starlette.requests import Request
+
+    from animechat.server import request_is_https
+
+    def req(scheme, peer, xfp=None):
+        headers = [(b"host", b"x")] + ([(b"x-forwarded-proto", xfp.encode())] if xfp else [])
+        return Request({"type": "http", "scheme": scheme, "method": "GET", "path": "/",
+                        "headers": headers, "query_string": b"", "client": (peer, 1),
+                        "server": ("x", 80), "root_path": ""})
+
+    assert request_is_https(req("https", "8.8.8.8"))
+    assert request_is_https(req("http", "127.0.0.1", "https")), "同机 nginx 反代要认"
+    assert not request_is_https(req("http", "8.8.8.8", "https")), "外网伪造这个头不算"
+    assert not request_is_https(req("http", "127.0.0.1"))
+    assert not request_is_https(req("http", "127.0.0.1", "http"))
+
+
+def test_session_cookie_is_secure_only_over_tls():
+    _, code = make_visitor("小安全")
+    plain = on()                                    # TestClient 默认 base_url 是 http://
+    r = login(plain, code)
+    assert r.status_code == 200
+    assert "Secure" not in r.headers["set-cookie"], "明文 http 上加 Secure，浏览器根本不肯存 = 没人能登录"
+    assert "HttpOnly" in r.headers["set-cookie"]
+
+    _, code2 = make_visitor("小安全2")
+    secure = TestClient(create_app(settings_override=Settings(
+        auth_enabled=True, auth_session_secret=SECRET, auth_bridge_token=BRIDGE)),
+        base_url="https://testserver")
+    r2 = login(secure, code2)
+    assert r2.status_code == 200
+    assert "Secure" in r2.headers["set-cookie"], "走 TLS 时 cookie 必须带 Secure"
+    assert "HttpOnly" in r2.headers["set-cookie"]
+    assert secure.get("/api/bootstrap").status_code == 200
+
+
 # ------------------------------------------------------------------ 门
 def test_auth_off_by_default_leaves_everything_open():
     client = TestClient(create_app(settings_override=Settings()))

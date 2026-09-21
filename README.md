@@ -327,10 +327,15 @@ Environment=ANIMECHAT_AUTH_ENABLED=1
 （他看得见全部会话），别随手给。飞书桥带 `x-animechat-token` 过门 —— **不能靠"来自
 127.0.0.1 免检"**，走 nginx 反代以后所有外网请求在应用眼里都是 127.0.0.1，那条规则等于门没关。
 
-一条要说清的残余风险：口令和 cookie 现在跑在**明文 HTTP** 上（那台机器没有域名，签不了
-证书）。所以：口令是随机长串、猜不出来，但同一路径上的人仍可能嗅到；别让它等于你别的
-密码；哪天有域名了就上 HTTPS，cookie 加上 `secure` 只需改一行。cookie 活 30 天，所以手机
-上不用天天敲口令。
+一条要说清的残余风险：口令和 cookie 走的是 **HTTP 明文**时，同一路径上的人可能嗅到它们
+（拿到的是一个能读你聊天记录的活动 cookie）。没有域名也能缓解：给服务器签一张**自签证书**
+开 443，并把 80 整站重定向到 https —— 访客第一次会看到"不受信任"的告警要点继续，但被动
+嗅探就此失效（防不住主动中间人；换成 Let's Encrypt 的正式证书才是彻底解决）。上了 TLS 之后
+cookie 的 `Secure` 是自动加的，判据在 `server.request_is_https()`：要么应用自己就是 https，
+要么 `X-Forwarded-Proto: https` 且**连接来自本机**（同机 nginx 反代）—— 外网伪造这个头不算，
+而 http 下不加 Secure（加了浏览器不肯存 cookie，等于谁也登录不了）。
+口令本身仍是 16 位随机串、猜不出来，也**别让它等于你任何已有密码**。cookie 活 30 天，
+手机不用天天敲；随时 `invite revoke` 撤销。
 
 ## 常见问题
 
@@ -352,7 +357,7 @@ Environment=ANIMECHAT_AUTH_ENABLED=1
 ## 开发
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q          # 428 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
+.venv\Scripts\python.exe -m pytest -q          # 433 passed（要全跑装 `.[dev,feishu]`；只装 dev 会少 20 条——那份飞书端到端整模块要 lark_oapi 才参与统计）
 .venv\Scripts\python.exe -m animechat.cli doctor
 $env:ANIMECHAT_DEBUG=1; .venv\Scripts\python.exe -m animechat.cli run --reload
 ```

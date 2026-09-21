@@ -233,6 +233,25 @@ def declared_emotion(text: str) -> str | None:
     return None
 
 
+LOOPBACK_PEERS = ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost")
+
+
+def request_is_https(request: Request) -> bool:
+    """这次请求是不是走 TLS 进来的。
+
+    TLS 是在 nginx 那儿终结的，所以要么应用自己就是 https，要么 nginx 明确告诉我们
+    X-Forwarded-Proto: https —— 后者**只在连接真的来自本机时可信**（同机反代）。
+    不这样区分的话：要么外网有人一个假头就骗过判断，要么上了 https 之后 cookie 还是
+    不加密传输，白上一层。
+    """
+    if request.url.scheme == "https":
+        return True
+    peer = (request.client.host if request.client else "") or ""
+    if peer in LOOPBACK_PEERS:
+        return request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
+    return False
+
+
 def create_app(settings_override: Settings | None = None) -> Any:
     ensure_dirs()
     from fastapi import FastAPI
@@ -283,7 +302,7 @@ def create_app(settings_override: Settings | None = None) -> Any:
         X-Forwarded-For，否则谁都能靠伪造这个头把自己洗成任意 IP。"""
         peer = (request.client.host if request.client else "") or ""
         fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        if fwd and peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"):
+        if fwd and peer in LOOPBACK_PEERS:
             return fwd
         return peer or "unknown"
 
@@ -372,10 +391,11 @@ def create_app(settings_override: Settings | None = None) -> Any:
         limiter.clear(key)
         store().touch_visitor(row["id"])
         resp = JSONResponse({"ok": True, "visitor": {"name": row["name"], "admin": bool(row["admin"])}})
-        # 没有 HTTPS 就不能加 secure=True（那样浏览器在 http 上根本不肯存 cookie，
-        # 谁也别想登录）。这条限制在 README「交给别人用」里写明了。
+        # Secure 只在 TLS 上加：http 下加了浏览器根本不肯存这个 cookie，等于谁也登录不了
+        # （本机 127.0.0.1 也算 http，所以判断走 request_is_https，不写死）。
+        https = request_is_https(request)
         resp.set_cookie(auth.COOKIE_NAME, auth.sign(s.auth_session_secret, row["id"], time.time() + SESSION_TTL),
-                        max_age=SESSION_TTL, httponly=True, samesite="lax", path="/")
+                        max_age=SESSION_TTL, httponly=True, samesite="lax", path="/", secure=https)
         return resp
 
     @app.post("/api/logout", include_in_schema=False)
