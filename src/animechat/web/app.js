@@ -1443,14 +1443,13 @@ function renderPicker() {
   const p = state.picker;
   for (const btn of qs("picker-tabs").children) btn.classList.toggle("on", btn.dataset.tab === p.tab);
   const emoRow = clear(qs("picker-emotions"));
-  emoRow.appendChild(el("button", {
-    class: p.emotion ? "" : "on", text: "全部情绪",
-    onclick: () => { p.emotion = ""; renderPicker(); },
-  }));
+  // 没有「全部情绪」那颗：再点一次当前情绪就是取消，省一格也让这条带更短。
   for (const emo of state.emotions) {
     if (emo.key === "neutral" && p.tab !== "all") continue;
     emoRow.appendChild(el("button", {
       class: p.emotion === emo.key ? "on" : "", text: emo.label,
+      title: p.emotion === emo.key ? "再点一次取消筛选" : "只看这个情绪",
+      "aria-pressed": p.emotion === emo.key ? "true" : "false",
       onclick: () => { p.emotion = p.emotion === emo.key ? "" : emo.key; renderPicker(); },
     }));
   }

@@ -99,6 +99,20 @@ def test_the_sticker_panel_spends_its_height_on_stickers():
     assert 'class: "attach-clear"' in JS and ".attach-clear {" in CSS
 
 
+def test_the_picker_has_one_filter_strip_not_two_rows():
+    """来源（全部/收藏/内置/我的/联网）和情绪以前各占一行；合成一条横向滚的筛选带。
+    「全部情绪」那颗一起删掉 —— 再点一次当前情绪就是取消，那本来就是它的行为。"""
+    assert 'class="picker-filters"' in HTML
+    assert HTML.index('id="picker-tabs"') < HTML.index('id="picker-emotions"') < HTML.index('id="picker-grid"')
+    assert HTML.index('id="picker-close"') < HTML.index('class="picker-filters"'), "× 跟搜索框同一行"
+    body = "\n".join(l for l in JS[JS.index("function renderPicker("):JS.index("async function renderWebPicker")].splitlines()
+                     if not l.strip().startswith("//"))
+    assert "全部情绪" not in body
+    assert '"aria-pressed"' in body, "情绪胶囊要报出按下状态（读屏靠它，不靠颜色）"
+    assert ".picker-filters {" in CSS and ".filter-sep {" in CSS
+    assert ".picker-emotions { display: flex; gap: 5px; flex: none; }" in CSS, "滚动交给整条带，别两排各自滚"
+
+
 def test_web_assets_are_revalidated():
     """前端没有版本号，必须每次回源校验，否则改了样式刷新还是旧的。"""
     from fastapi.testclient import TestClient

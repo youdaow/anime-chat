@@ -94,6 +94,11 @@
         <!-- 搜索框里别写例句：那一长句把输入框撑满，图只剩一行。例句挪到悬停提示。 -->
         <input id="picker-q" type="search" placeholder="搜表情"
                title="按标签搜，例如：傲娇 / 加油 / 无语">
+        <button id="picker-close" class="close">×</button>
+      </div>
+      <!-- 来源和情绪以前各占一行；合成一条横向滚的筛选带，中间一道分隔。
+           「全部情绪」那颗删了 —— 再点一次当前情绪就是取消（本来就是这个行为）。 -->
+      <div class="picker-filters">
         <div class="picker-tabs" id="picker-tabs">
           <button data-tab="all" class="on">全部</button>
           <button data-tab="favorite">收藏</button>
@@ -101,9 +106,9 @@
           <button data-tab="user">我的</button>
           <button data-tab="web">联网搜索</button>
         </div>
-        <button id="picker-close" class="close">×</button>
+        <span class="filter-sep"></span>
+        <div class="picker-emotions" id="picker-emotions"></div>
       </div>
-      <div class="picker-emotions" id="picker-emotions"></div>
       <div class="picker-grid" id="picker-grid"></div>
       <div class="picker-foot" id="picker-foot"></div>
     </div>
