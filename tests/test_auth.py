@@ -445,6 +445,19 @@ def test_setting_a_code_for_an_unknown_visitor_fails_loudly(capsys):
     assert "没有这个访客" in capsys.readouterr().out
 
 
+def test_code_dash_reads_a_pipe_without_the_scary_getpass_warning(monkeypatch, capsys):
+    """`-` 是给"不想让口令留在 shell 历史"的人用的，那多半也就是管道喂进来的场景。
+    getpass 在非终端上会警告「输入可能被回显」—— 它做不到关回显是事实，但每次管道
+    都吼一句就等于把这条路径变成噪音。"""
+    import io
+    vid, _ = make_visitor("管道改口令")
+    monkeypatch.setattr("sys.stdin", io.StringIO("tong-guo-guan-dao-de-kou-ling\n"))
+    assert cli_main(["invite", "set", vid, "-"]) == 0
+    err = capsys.readouterr().err
+    assert "echoed" not in err and "GetPassWarning" not in err, err
+    assert login(on(), "tong-guo-guan-dao-de-kou-ling").status_code == 200
+
+
 # ------------------------------------------------------------------ CLI
 def test_cli_invite_verbs_match_what_the_docs_say():
     """第一版把 name 做成裸位置参数（`invite 小明`），而 README / 帮助里写的是

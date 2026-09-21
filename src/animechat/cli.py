@@ -290,6 +290,11 @@ def _invite_code(value: str | None) -> str:
     if value is None:
         return auth.new_code()
     if value == "-":
+        import sys
+        if not sys.stdin.isatty():
+            # 管道里喂进来的：没有终端可以关回显，那就别一边做不到一边吐一句
+            # "Password input may be echoed" 吓人（getpass 的默认行为）。
+            return (sys.stdin.readline() or "").strip()
         import getpass
         return getpass.getpass("口令（输入时不回显）：")
     return value
