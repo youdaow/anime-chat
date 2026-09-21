@@ -88,6 +88,10 @@ def unsign(secret: str, value: str, now: float | None = None) -> tuple[str, floa
 
     没配 secret 时一律拒绝：那属于「配置没做完就上线」，宁可让人登录不上，
     也不要悄悄变成一个谁都能伪造 cookie 的门。
+
+    比较一律转成 bytes：hmac.compare_digest 收 str 时**只接受纯 ASCII**，
+    而 cookie 是外部输入 —— 传一个带非 ASCII 的值就会 TypeError，
+    等于让人随手在鉴权入口上打出一个 500（实测踩过）。
     """
     if not secret:
         return None
@@ -101,7 +105,7 @@ def unsign(secret: str, value: str, now: float | None = None) -> tuple[str, floa
         return None
     if not math.isfinite(expires) or (time.time() if now is None else now) >= expires:
         return None
-    if not hmac.compare_digest(mac, _mac(secret, vid + "." + exp)):
+    if not hmac.compare_digest(mac.encode("utf-8"), _mac(secret, vid + "." + exp).encode("utf-8")):
         return None
     return vid, expires
 

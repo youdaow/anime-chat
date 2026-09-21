@@ -288,10 +288,15 @@ def create_app(settings_override: Settings | None = None) -> Any:
         return peer or "unknown"
 
     def visitor_of(request: Request) -> dict | None:
-        """cookie 里的签名换回访客；桥接带 x-animechat-token 也认（它调的是本机 API）。"""
+        """cookie 里的签名换回访客；桥接带 x-animechat-token 也认（它调的是本机 API）。
+
+        令牌比较转成 bytes：compare_digest 收 str 只接受纯 ASCII，头里带个非 ASCII
+        字节就会 TypeError，那是人家随手一条请求就能在门口打出的 500。
+        """
         s = settings()
         tok = request.headers.get(auth.BRIDGE_HEADER, "")
-        if tok and s.auth_bridge_token and hmac.compare_digest(tok, s.auth_bridge_token):
+        if tok and s.auth_bridge_token and \
+                hmac.compare_digest(tok.encode("utf-8"), s.auth_bridge_token.encode("utf-8")):
             # 桥带令牌进来 = 以主人本人的身份操作：飞书那些会话本来就是他的
             return {"id": "", "name": "飞书桥接", "admin": True}
         got = auth.unsign(s.auth_session_secret, request.cookies.get(auth.COOKIE_NAME, ""))

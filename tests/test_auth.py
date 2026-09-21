@@ -72,6 +72,33 @@ def test_limiter_blocks_after_repeated_failures():
     assert lim.wait_seconds("ip") == 0
 
 
+def test_non_ascii_credentials_are_rejected_not_a_500():
+    """hmac.compare_digest 收 str 只接受纯 ASCII —— 第一版没转 bytes，随手发一个带
+    非 ASCII 字节的令牌头就在鉴权入口上打了个 500（服务器上实测撞到的）。
+
+    所以要用**原始字节**发头：httpx 自己就拒绝发送非 ASCII 的 header 值，而 uvicorn
+    收到的是按 latin-1 解出来的 str，两者不是同一条路。
+    """
+    client = on()
+    assert client.get("/api/bootstrap", headers={auth.BRIDGE_HEADER: b"caf\xc3\xa9"}).status_code == 401
+    assert client.get("/api/bootstrap", headers={auth.BRIDGE_HEADER: b"\xff\xfe"}).status_code == 401
+    assert client.get("/api/bootstrap", headers={auth.BRIDGE_HEADER: "totally-wrong"}).status_code == 401
+    assert client.get("/api/bootstrap",
+                      headers={"cookie": b"animechat_session=v1.9999999999.h\xc3\xa9llo"}).status_code == 401
+    assert auth.unsign(SECRET, "v1.9999999999.héllo") is None
+    assert auth.verify_code("café", auth.hash_code("小明")) is False
+
+
+def test_code_login_accepts_a_non_ascii_attempt():
+    """登录接口是彻底的外部输入：口令里出现什么都不能抛。"""
+    client = on()
+    make_visitor("小周")
+    assert login(client, "口令中文的").status_code == 401
+    assert login(client, "   ").status_code == 401
+    assert login(client, "").status_code == 401
+    assert login(client, {"不是": "字符串"}).status_code == 401
+
+
 # ------------------------------------------------------------------ 门
 def test_auth_off_by_default_leaves_everything_open():
     client = TestClient(create_app(settings_override=Settings()))
