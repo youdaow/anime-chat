@@ -459,7 +459,9 @@ function openCard(cid) {
   showPage("card");
 }
 
-/* 名片：微信点联系人看到的那一页。人设摊开给人看，底部一个绿色「发消息」。 */
+/* 名片：微信点联系人看到的那一页。只摊四样 —— 简介 / 口头禅 / 喜欢 / 讨厌，
+   性格内核、说话方式、底线、当前场景、语气示范那些是给模型看的长文，
+   在名片上堆成一堵墙，谁都不会读；要看要改都在「编辑人设」里。 */
 function renderCard(char) {
   const box = clear(qs("card-body"));
   const line = (label, value) => (value ? el("div", { class: "card-line" }, [
@@ -472,24 +474,18 @@ function renderCard(char) {
     el("span", { class: "card-title", text: char.title || "" }),
   ]));
   box.appendChild(el("div", { class: "card-group" }, [
-    line("性格", char.personality),
-    line("说话方式", char.speaking_style),
+    line("简介", char.description),
     line("口头禅", (char.catchphrases || []).join("、")),
     line("喜欢", (char.likes || []).join("、")),
     line("讨厌", (char.dislikes || []).join("、")),
-    line("底线", char.boundaries),
-    line("当前场景", char.scenario),
-    el("div", { class: "card-line" }, [
-      el("span", { class: "card-label", text: "语气示范" }),
-      el("span", { class: "card-value", text: (char.example_dialogs || []).length + " 组" }),
-    ]),
-    line("用图频率", ({ off: "不用表情包", light: "情绪到位才发", rich: "几乎每条都配一张" })[char.sticker_style] || ""),
   ]));
-  box.appendChild(el("div", { class: "card-actions" }, [
-    el("button", { class: "primary card-send", text: "发消息", onclick: () => openThreadFor(char.id) }),
-    el("button", { class: "plain", text: "编辑人设 / 外观", onclick: () => openCharEditor(char, ctx) }),
-    el("button", { class: "plain", text: "更多操作（复制 / 导出 / 隐藏 / 删除）", onclick: () => openCharMenu(char) }),
-  ]));
+  const actions = [el("button", { class: "primary card-send", text: "发消息", onclick: () => openThreadFor(char.id) })];
+  if (state.host !== false) {
+    // 编辑人设 / 复制 / 导出 / 隐藏 / 删除对访客全是 403，跟「我」那一栏同一个道理
+    actions.push(el("button", { class: "plain", text: "编辑人设 / 外观", onclick: () => openCharEditor(char, ctx) }));
+    actions.push(el("button", { class: "plain", text: "更多操作（复制 / 导出 / 隐藏 / 删除）", onclick: () => openCharMenu(char) }));
+  }
+  box.appendChild(el("div", { class: "card-actions" }, actions));
 }
 
 function charName(id) {

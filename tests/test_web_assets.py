@@ -477,6 +477,17 @@ def test_contacts_open_a_card_before_chatting():
     assert "openCharMenu(char)" in card, "复制 / 导出 / 隐藏 / 删除收在名片的更多操作里"
 
 
+def test_the_card_shows_four_short_lines_and_nothing_else():
+    """名片只摊 简介 / 口头禅 / 喜欢 / 讨厌。性格内核、说话方式、底线、当前场景、语气示范
+    那些是给模型看的长文，摆在名片上就是一堵墙，谁都不会读 —— 要看要改走「编辑人设」。"""
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    card = app[app.index("function renderCard("):app.index("function charName(")]
+    assert 'line("简介", char.description)' in card
+    assert 'line("口头禅"' in card and 'line("喜欢"' in card and 'line("讨厌"' in card
+    for gone in ("性格", "说话方式", "底线", "当前场景", "语气示范", "用图频率"):
+        assert gone not in card, "名片上不该再摆「%s」" % gone
+
+
 def test_pushed_pages_cover_the_tabbar():
     """聊天和名片是推入页：占满整格、把底部选项卡盖住（微信聊天时看不见 tab）。
     少了 grid-row: 1 / -1，推入页只占第一行，底下露出一条选项卡，看着像没全屏。"""
