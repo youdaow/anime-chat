@@ -1,9 +1,46 @@
+# 线上 /etc/nginx/sites-available/anime-chat 的副本（2026-09-21 与服务器一致）。
+# 这份是**手工维护**的：服务器上是直接改的，改完记得同步回来，否则下次照这份铺上去
+# 会把 /me/ 静态站和 443 一起抹掉。证书在 /etc/nginx/ssl/anime-chat.{crt,key}，自签、397 天。
+
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+
+    ssl_certificate     /etc/nginx/ssl/anime-chat.crt;
+    ssl_certificate_key /etc/nginx/ssl/anime-chat.key;
     server_name _;
 
     client_max_body_size 20m;
+
+    # 明文一律 308 上 HTTPS（自签证书首次要手动信任一次）
+    if ($scheme = http) {
+        return 308 https://$host$request_uri;
+    }
+
+    # ---- 个人网站（纯静态）：/me/ → /var/www/me/ ----
+    location = /me {
+        return 301 /me/;
+    }
+
+    location /me/assets/ {
+        root /var/www;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    location /me/ {
+        root /var/www;
+        index index.html;
+        try_files $uri $uri/ =404;
+    }
+
+    # 旧地址重定向，确认没人再访问后可以删掉
+    location /portfolio/ {
+        return 301 /me/;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:8899;
@@ -11,6 +48,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
 
