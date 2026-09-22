@@ -7,8 +7,9 @@
   - 库里 QQ 但没保留的 → 移到隔离区 + 删 meta 条目（软删除，可挪回）
 
 跑法：
-    python scripts/sync_library_from_desktop.py          # 干跑：只报告，不改任何东西
-    python scripts/sync_library_from_desktop.py --run    # 真正执行 + 备份 meta + refresh
+    python scripts/sync_library_from_desktop.py --dir ~/Desktop/表情包        # 干跑：只报告
+    python scripts/sync_library_from_desktop.py --dir ~/Desktop/表情包 --run  # 执行 + 备份 meta
+不给 --dir 时用下面那个老默认路径（分好类的子目录那版）。
 """
 import argparse
 import hashlib
@@ -42,13 +43,17 @@ def src_of_desktop(p: Path) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", action="store_true", help="真正执行（默认干跑）")
+    ap.add_argument("--dir", default="",
+                    help="保留图所在目录。以前是「表情包_已分类/1_二次元」那种分好类的子目录，"
+                         "现在人直接摊平放一个目录里（如 ~/Desktop/表情包），得能指过去")
     args = ap.parse_args()
 
-    if not KEEP_ROOT.is_dir():
-        print("没有保留图目录：", KEEP_ROOT)
+    root = Path(args.dir).expanduser() if args.dir else KEEP_ROOT
+    if not root.is_dir():
+        print("没有保留图目录：", root)
         return 1
 
-    kept = [f for f in KEEP_ROOT.rglob("*") if f.is_file() and f.suffix.lower() in IMG]
+    kept = [f for f in root.rglob("*") if f.is_file() and f.suffix.lower() in IMG]
     kept_by_sha = {}
     for p in kept:
         s = sha10(p)
