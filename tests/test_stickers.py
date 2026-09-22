@@ -205,7 +205,8 @@ def test_batch_scripts_go_through_the_library_not_one_meta_file():
        没了 —— 真撞上过：1613 张退化成 {"sha1": ...}，靠 sync 脚本留的 .bak 才捞回来。
        refresh() 会替没人认领的图补一条光秃秃的条目，所以这件事发生时谁都看不出来。"""
     scripts = Path(__file__).resolve().parents[1] / "scripts"
-    for name in ("import_qq_stickers.py", "sync_library_from_desktop.py", "tag_stickers_vision.py"):
+    for name in ("import_qq_stickers.py", "sync_library_from_desktop.py",
+                 "tag_stickers_vision.py", "sticker_dupe.py"):
         src = (scripts / name).read_text(encoding="utf-8")
         assert "read_meta()" in src, name + " 要用库的合并视图读 meta"
         assert ".write_meta(" in src, name + " 要用库的拆分写回 meta"
@@ -238,3 +239,72 @@ def test_deploy_package_skips_machine_local_sticker_state(tmp_path, monkeypatch)
     assert {p.name for p in (out / "stickers").iterdir()} == {"傲娇+哼.png"}
     left = {p.name for p in out.iterdir()}
     assert left == {"stickers", "stickers_meta.json"}, "本机专属/敏感文件漏进部署包：" + str(left)
+
+
+def _flat(color, fmt):
+    import io
+    buf = io.BytesIO()
+    Image.new("RGBA", (32, 32), color).save(buf, format=fmt)
+    return buf.getvalue()
+
+
+def test_dupe_signature_is_pixels_frame_by_frame_not_file_bytes(tmp_path):
+    """查重要认「解出来是不是同一张图」，不能只比文件字节：库里那 79 组重复里有一批是
+       同一份像素挂着不同后缀（真 GIF 名叫 .jpg），只比 sha1 抓不到 —— 同步脚本就是
+       这样把带着手写标签的 p01…p54 当新图重导了一遍。
+       反过来动图必须逐帧比：只算第一帧的话，两套「开头一样、后半段不一样」的表情会
+       被判成重复，被删掉的那张谁也不会发现。"""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import sticker_dupe as sd
+
+    png = tmp_path / "同图.png"
+    gif = tmp_path / "同图.jpg"          # 后缀骗人：里面是 GIF，解出来跟 png 逐点相同
+    png.write_bytes(_flat((240, 30, 90, 255), "PNG"))
+    gif.write_bytes(_flat((240, 30, 90, 255), "GIF"))
+    sp, sg = sd.signature(png), sd.signature(gif)
+    assert sp[0] != sg[0], "字节 sha 本来就该不同，否则测不出旧判据的漏网"
+    assert sp[1] == sg[1], "同一份像素必须算同一张"
+
+    def anim(name, tail):
+        p = tmp_path / name
+        first = Image.new("RGBA", (24, 24), (255, 0, 0, 255))
+        first.save(p, save_all=True, append_images=[Image.new("RGBA", (24, 24), tail)])
+        return p
+
+    a = anim("a.gif", (0, 0, 255, 255))
+    b = anim("b.gif", (0, 255, 0, 255))
+    assert sd.signature(a)[1] != sd.signature(b)[1], "只有第一帧相同的两套动图不是重复"
+
+
+def test_dupe_keeper_keeps_the_richer_record():
+    """移走一张不心疼，丢一条打过的手写/视觉标签才心疼。名次：收藏 > 用过 > 标签条数
+       > note 是人写的 > label 是人写的 > 有情绪标签 > 文件更小。"""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import sticker_dupe as sd
+
+    hand = {"tags": ["无语", "呆滞", "凝视"], "note": "对方说了很无语的话", "label": "无语"}
+    auto = {"tags": ["收到"], "note": "QQ本地表情导入 来源收到", "label": "收到·78ffe099d3"}
+    assert sd.keeper_rank("p09.gif", hand, 5000) > sd.keeper_rank("qq收到-x.jpg", auto, 1000)
+    used = dict(auto, tags=["收到", "无语"], emotion="flat")
+    assert sd.keeper_rank("qq收到-y.jpg", used, 1000) > sd.keeper_rank("qq收到-x.jpg", auto, 1000)
+    assert sd.keeper_rank("qq收到-small.jpg", auto, 1000) > sd.keeper_rank("qq收到-big.jpg", auto, 9000)
+
+
+def test_library_index_sees_batches_beyond_its_own(tmp_path):
+    """同步脚本判「库里有没有这张」必须看全库，判「该不该隔离」才只看自己导的那批。
+       两个集合都从磁盘现场扫出来 —— meta 里那个 sha1 只是导入当时的抄录，不能当现状。"""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import sync_library_from_desktop as sy
+
+    blob = _flat((10, 200, 30, 255), "PNG")
+    (tmp_path / "p01.webp").write_bytes(blob)
+    (tmp_path / "qq收到-x.gif").write_bytes(_flat((10, 200, 30, 255), "GIF"))
+    meta = {"p01.webp": {"tags": ["傲娇"], "note": "得意地命令对方"},
+            "qq收到-x.gif": {"tags": ["收到"], "note": "QQ本地表情导入 来源收到"}}
+    everywhere, ours = sy.library_index(tmp_path, meta)
+    assert set(everywhere) == set(ours), "同一张图的两份副本要并成一个指纹"
+    assert list(everywhere.values()) == ["p01.webp"], "全库那份得认老批次，否则它会被当新图重导"
+    assert list(ours.values()) == ["qq收到-x.gif"], "隔离范围只能是自己导入的那批"

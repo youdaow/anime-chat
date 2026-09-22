@@ -12,7 +12,6 @@
 不给 --dir 时用下面那个老默认路径（分好类的子目录那版）。
 """
 import argparse
-import hashlib
 import re
 import shutil
 import sys
@@ -20,8 +19,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from animechat.config import user_sticker_dir
 from animechat.stickers import library
+from sticker_dupe import signature
 
 CAT = Path.home() / "Desktop" / "表情包_已分类" / "1_二次元"
 KEEP_ROOT = CAT
@@ -29,15 +30,48 @@ IMG = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 SRC_TAG = {"personal": "收藏", "recv": "收到", "super": "超级表情", "market": "商店"}
 
 
-def sha10(p: Path) -> str:
-    try:
-        return hashlib.sha1(p.read_bytes()).hexdigest()[:10]
-    except OSError:
-        return ""
-
-
 def src_of_desktop(p: Path) -> str:
     return p.parent.name if p.parent.name in SRC_TAG.values() else "收到"
+
+
+def desktop_index(root: Path) -> tuple[dict, int]:
+    """桌面那批 -> (像素指纹 -> (字节 sha10, 文件), 扫过的张数)。
+
+    按像素而不是字节认重：QQ 把同一张表情存成 .png / .jpg / .webp 三份，只比字节的
+    话一份算一张。桌面目录自己也重（收到、收藏各存过同一张），这里顺带并掉。
+    """
+    out: dict[str, tuple[str, Path]] = {}
+    scanned = 0
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.suffix.lower() not in IMG:
+            continue
+        scanned += 1
+        s = signature(p)
+        if s:
+            out.setdefault(s[1], (s[0][:10], p))
+    return out, scanned
+
+
+def library_index(stdir: Path, meta: dict) -> tuple[dict, dict]:
+    """现场扫库，返回两份「像素指纹 -> 文件名」索引。
+
+    全库那份用来判「这张库里到底有没有」。以前只看 note 以 QQ 开头的条目，于是撞上
+    p01…p54 那批带手写标签的老图时判成没有，一次同步重导了 54 张。
+    QQ 那份只管隔离：不是我们导入的批次不碰。
+    """
+    everywhere: dict[str, str] = {}
+    ours: dict[str, str] = {}
+    for p in sorted(stdir.iterdir()):
+        if not p.is_file() or p.suffix.lower() not in IMG:
+            continue
+        s = signature(p)
+        if not s:
+            continue
+        everywhere.setdefault(s[1], p.name)
+        info = meta.get(p.name)
+        if isinstance(info, dict) and str(info.get("note", "")).startswith("QQ"):
+            ours.setdefault(s[1], p.name)
+    return everywhere, ours
 
 
 def main():
@@ -53,13 +87,8 @@ def main():
         print("没有保留图目录：", root)
         return 1
 
-    kept = [f for f in root.rglob("*") if f.is_file() and f.suffix.lower() in IMG]
-    kept_by_sha = {}
-    for p in kept:
-        s = sha10(p)
-        if s:
-            kept_by_sha.setdefault(s, p)   # 内容去重：同 sha 只认第一张
-    print(f"桌面保留 {len(kept)} 张，内容去重后 {len(kept_by_sha)} 种")
+    kept, scanned = desktop_index(root)
+    print(f"桌面保留 {scanned} 张，内容去重后 {len(kept)} 种")
 
     stdir = user_sticker_dir()
     lib = library()
@@ -69,18 +98,14 @@ def main():
     meta = lib.read_meta()
     quar = stdir.parent / "stickers_quarantine"
 
-    # 库里的 QQ 条目：sha1 -> 文件名
-    lib_sha = {}
-    for fname, info in meta.items():
-        if isinstance(info, dict) and str(info.get("note", "")).startswith("QQ"):
-            s = str(info.get("sha1") or "")[:10]
-            if s:
-                lib_sha[s] = fname
-
+    # 库里的现状不信 meta 里记的 sha1：那只是导入当时的一份抄录。
+    lib_pix, qq_pix = library_index(stdir, meta)
+    desk = set(kept)
     # 三分拣
-    add = [(s, kept_by_sha[s]) for s in kept_by_sha if s not in lib_sha]              # 库里没有
-    delete = [(s, lib_sha[s]) for s in lib_sha if s not in kept_by_sha]                # 没保留
-    keep = [s for s in kept_by_sha if s in lib_sha]                                    # 已有不动
+    add = [kept[s] for s in kept if s not in lib_pix]                  # 库里没有
+    delete = [qq_pix[s] for s in qq_pix if s not in desk]              # 没保留
+    keep = [s for s in kept if s in lib_pix]                           # 已有不动
+    keep_qq = [s for s in kept if s in qq_pix]                         # 其中属于 QQ 那批的
 
     print(f"\n将新增导入 : {len(add)}")
     print(f"将保留不动 : {len(keep)}")
@@ -102,7 +127,7 @@ def main():
 
     # 1) 删除（没保留的 QQ 图移入隔离）
     moved = 0
-    for s, fname in delete:
+    for fname in delete:
         src = stdir / fname
         if src.is_file():
             dest = quar / fname
@@ -136,7 +161,7 @@ def main():
     lib.refresh()
 
     qq_left = sum(1 for v in meta.values() if isinstance(v, dict) and str(v.get("note", "")).startswith("QQ"))
-    print(f"\n完成：新增 {added}、移入隔离 {moved}、库内 QQ 现 {qq_left} 张（应≈{len(keep) + added}）。")
+    print(f"\n完成：新增 {added}、移入隔离 {moved}、库内 QQ 现 {qq_left} 张（应≈{len(keep_qq) + added}）。")
     print(f"库文件现 {len(list(stdir.glob('*')))}，隔离区 {len(list(quar.glob('*')))}。")
     if add:
         print(f"新增的 {added} 张尚无视觉标签（库里原本没有），如需可再跑一次 tag_stickers_vision 续跑打标。")
