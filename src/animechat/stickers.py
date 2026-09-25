@@ -517,7 +517,14 @@ class StickerLibrary:
             rnd = random.Random((seed or 0) * 131 + stable % 9973).random()
             return (-bonus, rnd)
 
-        return sorted(pool, key=rank)[0]
+        ranked = sorted(pool, key=rank)
+        # 取前几名里随机选一个（增加多样性），权重随排名下降
+        top_n = min(5, len(ranked))
+        weights = [1.0 / (i + 1) for i in range(top_n)]
+        total = sum(weights)
+        weights = [w / total for w in weights]
+        idx = random.choices(range(top_n), weights=weights)[0]
+        return ranked[idx]
 
     # ---------------------------------------------------------- 写入
     def _update_meta(self, filename: str, patch: dict) -> dict:

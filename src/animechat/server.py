@@ -209,7 +209,11 @@ def auto_attach(char: Character, settings: Settings, text: str, have: list[str],
         return None
     if conf < (0.35 if mode == "rich" else 0.55):
         return None
-    st = library().pick_for_emotion(emo, prefs=char.sticker_prefs, exclude=set(have), seed=seed)
+    # 增加随机性：从多个匹配中随机选，而不是总是选同一个
+    st = library().pick_for_emotion(emo, prefs=char.sticker_prefs, exclude=set(have), seed=seed + id(conv))
+    if not st:
+        # 如果没选到，放宽条件再试一次（不用偏好列表）
+        st = library().pick_for_emotion(emo, prefs=[], exclude=set(have), seed=seed)
     return st.id if st else None
 
 
@@ -1154,7 +1158,8 @@ def create_app(settings_override: Settings | None = None) -> Any:
                             usage = ev.get("usage") or {}
                         elif ev["kind"] == "reasoning":
                             reasoning.append(str(ev.get("text") or ""))
-                            yield _sse("reasoning", {"t": ev["text"]})
+                            # 推理内容不直接显示给用户（会暴露思维链），只用于错误检测
+                            # yield _sse("reasoning", {"t": ev["text"]})
                         elif ev["kind"] == "finish":
                             finish_reason = str(ev.get("reason") or "")
                 for line in handle(marker.flush()):
