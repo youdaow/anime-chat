@@ -210,7 +210,10 @@ def auto_attach(char: Character, settings: Settings, text: str, have: list[str],
     if conf < (0.35 if mode == "rich" else 0.55):
         return None
     # 增加随机性：从多个匹配中随机选，而不是总是选同一个
-    st = library().pick_for_emotion(emo, prefs=char.sticker_prefs, exclude=set(have), seed=seed + id(conv))
+    # 用当前时间和消息 ID 组合成种子，确保同一句话也不会重复
+    import time
+    rseed = seed + int(time.time() * 1000) % 10000
+    st = library().pick_for_emotion(emo, prefs=char.sticker_prefs, exclude=set(have), seed=rseed)
     if not st:
         # 如果没选到，放宽条件再试一次（不用偏好列表）
         st = library().pick_for_emotion(emo, prefs=[], exclude=set(have), seed=seed)

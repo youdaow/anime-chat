@@ -518,13 +518,10 @@ class StickerLibrary:
             return (-bonus, rnd)
 
         ranked = sorted(pool, key=rank)
-        # 取前几名里随机选一个（增加多样性），权重随排名下降
-        top_n = min(5, len(ranked))
-        weights = [1.0 / (i + 1) for i in range(top_n)]
-        total = sum(weights)
-        weights = [w / total for w in weights]
-        idx = random.choices(range(top_n), weights=weights)[0]
-        return ranked[idx]
+        # 取更多候选中随机选（增加多样性）：用均匀分布而不是加权
+        # 前 10 名里完全等概率选一张，让排名稍低的表情也有机会出现
+        top_n = min(10, len(ranked))
+        return ranked[random.randint(0, top_n - 1)]
 
     # ---------------------------------------------------------- 写入
     def _update_meta(self, filename: str, patch: dict) -> dict:
